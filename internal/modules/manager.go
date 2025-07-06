@@ -2,18 +2,23 @@ package modules
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 
+	"github.com/rizqme/gode/internal/plugins"
 	"github.com/rizqme/gode/pkg/config"
 )
 
 // ModuleManager handles module loading and resolution
 type ModuleManager struct {
-	config       *config.PackageJSON
-	cache        map[string]string
-	importMaps   map[string]string
-	registries   map[string]string
+	config         *config.PackageJSON
+	cache          map[string]string
+	importMaps     map[string]string
+	registries     map[string]string
+	pluginRegistry *plugins.Registry
+	vm             interface{}
+	runtime        interface{}
 }
 
 // NewModuleManager creates a new module manager
@@ -25,9 +30,34 @@ func NewModuleManager() *ModuleManager {
 	}
 }
 
+// NewModuleManagerWithRuntime creates a new module manager with plugin support
+func NewModuleManagerWithRuntime(vm interface{}, rt interface{}) *ModuleManager {
+	m := &ModuleManager{
+		cache:      make(map[string]string),
+		importMaps: make(map[string]string),
+		registries: make(map[string]string),
+		vm:         vm,
+		runtime:    rt,
+	}
+	
+	if vm != nil && rt != nil {
+		// Cast to the plugin VM interface
+		if pluginVM, ok := vm.(plugins.VM); ok {
+			m.pluginRegistry = plugins.NewRegistry(pluginVM, rt)
+		}
+	}
+	
+	return m
+}
+
 // Configure sets up the module manager with package.json configuration
 func (m *ModuleManager) Configure(cfg *config.PackageJSON) error {
 	m.config = cfg
+	
+	// Handle nil config
+	if cfg == nil {
+		return nil
+	}
 	
 	// Setup import mappings
 	if cfg.Gode.Imports != nil {
@@ -76,6 +106,16 @@ func (m *ModuleManager) Resolve(specifier, referrer string) (string, error) {
 	// 1. Check import mappings
 	if mapped, exists := m.importMaps[specifier]; exists {
 		return m.Resolve(mapped, referrer)
+	}
+	
+	// 1b. Check import mappings with prefix matching (for @app/file.js)
+	for alias, path := range m.importMaps {
+		if strings.HasPrefix(specifier, alias+"/") {
+			// Replace the alias part with the mapped path
+			remaining := strings.TrimPrefix(specifier, alias)
+			newSpecifier := path + remaining
+			return m.Resolve(newSpecifier, referrer)
+		}
 	}
 	
 	// 2. Check for built-in modules
@@ -189,12 +229,53 @@ func (m *ModuleManager) loadHTTPModule(url string) (string, error) {
 }
 
 func (m *ModuleManager) loadGoPlugin(path string) (string, error) {
-	// TODO: Implement Go plugin loading
-	return "", fmt.Errorf("Go plugin loading not yet implemented: %s", path)
+	if m.pluginRegistry == nil {
+		return "", fmt.Errorf("plugin system not initialized (VM/Runtime required)")
+	}
+	
+	// Load the plugin
+	jsObj, err := m.pluginRegistry.LoadPlugin(path)
+	if err != nil {
+		return "", fmt.Errorf("failed to load plugin %s: %v", path, err)
+	}
+	
+	// Register as a module in the VM if it supports it
+	pluginName := filepath.Base(strings.TrimSuffix(path, filepath.Ext(path)))
+	if pluginVM, ok := m.vm.(plugins.VM); ok {
+		pluginVM.RegisterModule(pluginName, jsObj)
+	}
+	
+	// Return empty string as plugins are registered directly with the VM
+	return "", nil
 }
 
 func (m *ModuleManager) loadFileModule(path string) (string, error) {
-	// TODO: Implement file module loading with proper extension handling
-	// Should handle .js, .ts, .json, etc.
-	return "", fmt.Errorf("file module loading not yet implemented: %s", path)
+	// Check if file exists
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		return "", fmt.Errorf("file not found: %s", path)
+	}
+	
+	// Read file contents
+	content, err := os.ReadFile(path)
+	if err != nil {
+		return "", fmt.Errorf("failed to read file %s: %w", path, err)
+	}
+	
+	// Handle different file extensions
+	ext := filepath.Ext(path)
+	switch ext {
+	case ".js":
+		// JavaScript file - return as is
+		return string(content), nil
+	case ".json":
+		// JSON file - wrap in module.exports
+		return fmt.Sprintf("module.exports = %s;", string(content)), nil
+	case ".ts":
+		// TypeScript file - for now, treat as JavaScript
+		// TODO: Implement TypeScript compilation
+		return string(content), nil
+	default:
+		// Default to JavaScript
+		return string(content), nil
+	}
 }

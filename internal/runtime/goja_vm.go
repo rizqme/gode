@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"fmt"
+	"os"
 	"sync"
 
 	"github.com/dop251/goja"
@@ -52,10 +53,13 @@ func (vm *gojaVM) eventLoop() {
 
 // setupGlobals sets up built-in global objects and functions
 func (vm *gojaVM) setupGlobals() error {
-	// Add console.log
+	// Add console.log and console.error
 	console := vm.runtime.NewObject()
 	console.Set("log", func(args ...interface{}) {
 		fmt.Println(args...)
+	})
+	console.Set("error", func(args ...interface{}) {
+		fmt.Fprintln(os.Stderr, args...)
 	})
 	vm.runtime.Set("console", console)
 	
@@ -167,7 +171,15 @@ func (vm *gojaVM) NewFunction(fn NativeFunction) Value {
 			return gojaVal.value
 		}
 		
-		return goja.Undefined()
+		// Handle other Value interface types
+		if val, ok := result.(Value); ok {
+			if gojaVal, ok := val.(*gojaValue); ok {
+				return gojaVal.value
+			}
+		}
+		
+		// Convert Go value to Goja value
+		return vm.runtime.ToValue(result.Export())
 	}
 	
 	return &gojaValue{vm.runtime.ToValue(gojaFn)}
@@ -191,7 +203,12 @@ func (vm *gojaVM) SetGlobal(name string, value interface{}) error {
 		return fmt.Errorf("VM is disposed")
 	}
 	
-	vm.runtime.Set(name, value)
+	// If the value is one of our wrapped types, extract the underlying Goja value
+	if gojaVal, ok := value.(*gojaValue); ok {
+		vm.runtime.Set(name, gojaVal.value)
+	} else {
+		vm.runtime.Set(name, value)
+	}
 	return nil
 }
 
@@ -227,7 +244,32 @@ func (vm *gojaVM) RequireModule(name string) (Value, error) {
 			return nil, err
 		}
 		
-		return vm.RunModule(name, source)
+		// Execute module with CommonJS environment
+		// Create module and exports objects
+		moduleObj := vm.runtime.NewObject()
+		exportsObj := vm.runtime.NewObject()
+		moduleObj.Set("exports", exportsObj)
+		
+		// Set global module and exports
+		vm.runtime.Set("module", moduleObj)
+		vm.runtime.Set("exports", exportsObj)
+		
+		// Execute the module source
+		_, err = vm.runtime.RunString(source)
+		if err != nil {
+			return nil, err
+		}
+		
+		// Get the exports and cache the module
+		exports := moduleObj.Get("exports")
+		exportsValue := &gojaValue{exports}
+		
+		// Cache the module for future requires
+		vm.mu.Lock()
+		vm.modules[name] = exportsValue
+		vm.mu.Unlock()
+		
+		return exportsValue, nil
 	}
 	
 	return nil, fmt.Errorf("module not found: %s", name)
@@ -250,6 +292,13 @@ func (vm *gojaVM) LeaveContext() {
 
 // Dispose implements VM.Dispose
 func (vm *gojaVM) Dispose() {
+	vm.mu.Lock()
+	defer vm.mu.Unlock()
+	
+	if vm.disposed {
+		return // Already disposed
+	}
+	
 	vm.disposed = true
 	close(vm.vmQueue)
 }
@@ -259,8 +308,18 @@ type gojaValue struct {
 	value goja.Value
 }
 
-func (v *gojaValue) IsNull() bool       { return goja.IsNull(v.value) }
-func (v *gojaValue) IsUndefined() bool  { return goja.IsUndefined(v.value) }
+func (v *gojaValue) IsNull() bool       { 
+	if v.value == nil {
+		return true
+	}
+	return goja.IsNull(v.value) 
+}
+func (v *gojaValue) IsUndefined() bool  { 
+	if v.value == nil {
+		return true
+	}
+	return goja.IsUndefined(v.value) 
+}
 func (v *gojaValue) IsObject() bool     { return v.value != nil && v.value.ToObject(nil) != nil }
 func (v *gojaValue) IsFunction() bool   { 
 	if v.value == nil {
@@ -280,7 +339,12 @@ func (v *gojaValue) IsBool() bool       { return v.value != nil }
 func (v *gojaValue) String() string     { return v.value.String() }
 func (v *gojaValue) Number() float64    { return v.value.ToFloat() }
 func (v *gojaValue) Bool() bool         { return v.value.ToBoolean() }
-func (v *gojaValue) Export() interface{} { return v.value.Export() }
+func (v *gojaValue) Export() interface{} { 
+	if v.value == nil {
+		return nil
+	}
+	return v.value.Export() 
+}
 
 func (v *gojaValue) AsObject() Object {
 	if obj := v.value.ToObject(nil); obj != nil {
@@ -355,7 +419,7 @@ func (o *gojaObject) Get(key string) Value {
 func (o *gojaObject) Has(key string) bool {
 	// Goja doesn't have a direct Has method, use Get and check for undefined
 	val := o.obj.Get(key)
-	return !goja.IsUndefined(val)
+	return val != nil && !goja.IsUndefined(val) && !goja.IsNull(val)
 }
 
 func (o *gojaObject) Delete(key string) bool {
@@ -391,9 +455,12 @@ func (a *gojaArray) Length() int {
 }
 
 func (a *gojaArray) Push(value interface{}) error {
+	if a.runtime == nil {
+		return fmt.Errorf("runtime not available")
+	}
 	pushFn := a.obj.Get("push")
 	if fn, ok := goja.AssertFunction(pushFn); ok {
-		_, err := fn(goja.Undefined(), a.runtime.ToValue(value))
+		_, err := fn(a.obj, a.runtime.ToValue(value))
 		return err
 	}
 	return fmt.Errorf("push method not found")

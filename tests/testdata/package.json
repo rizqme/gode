@@ -1,0 +1,26 @@
+{
+  "name": "gode-testdata",
+  "version": "1.0.0",
+  "description": "Test data for Gode testing",
+  "type": "module",
+  "main": "simple.js",
+  "dependencies": {
+    "lodash": "^4.17.21"
+  },
+  "gode": {
+    "imports": {
+      "@test": "./test",
+      "@utils": "./utils"
+    },
+    "permissions": {
+      "allow-read": ["./data"],
+      "allow-write": ["./output"],
+      "allow-net": ["api.example.com"],
+      "allow-env": ["NODE_ENV", "TEST_VAR"]
+    },
+    "build": {
+      "target": "linux-amd64",
+      "minify": false
+    }
+  }
+}

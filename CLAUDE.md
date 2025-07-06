@@ -48,13 +48,19 @@ Gode is a modern JavaScript/TypeScript runtime built in Go, inspired by Deno. It
 - Request/response handling with streaming support
 - Middleware chain execution
 - Go-based external API simulation
+- **Plugin System**: Dynamic loading of Go plugins (.so files) with automatic JavaScript bindings
+  - No permissions required for loading plugins
+  - Leverages Goja's built-in Go-JavaScript type conversion
+  - Example plugins: math (arithmetic operations) and hello (string operations)
+  - Plugin registry for managing loaded plugins
 
 ### Migration Path
 1. Current: Callback-based async with mutex → channel-based event queue ✓
-2. Next: Add Promise support to VM abstraction
-3. Future: Implement package.json loading and module resolution
-4. Future: Add esbuild integration for TypeScript
-5. Future: Implement build system for single binary output
+2. Current: Go plugin system with .so file loading ✓
+3. Next: Add Promise support to VM abstraction
+4. Future: Implement package.json loading and module resolution
+5. Future: Add esbuild integration for TypeScript
+6. Future: Implement build system for single binary output
 
 ## Common Development Commands
 
@@ -65,12 +71,22 @@ go build -o gode ./cmd/gode
 
 # Run examples
 ./gode run examples/simple.js
+./gode run examples/plugin_demo.js
 
 # Get help
 ./gode help
 
 # Show version
 ./gode version
+```
+
+### Building Plugins
+```bash
+# Build math plugin
+cd plugins/examples/math && make build
+
+# Build hello plugin
+cd plugins/examples/hello && make build
 ```
 
 ### Running Legacy Code (Archive)
@@ -98,13 +114,28 @@ gode/
 │   │   ├── goja_vm.go        # Goja implementation
 │   │   ├── runtime.go        # Main runtime logic
 │   │   └── module_manager.go # Module manager alias
-│   └── modules/       # Module system
-│       └── manager.go        # Module resolution & loading
+│   ├── modules/       # Module system
+│   │   └── manager.go        # Module resolution & loading
+│   └── plugins/       # Plugin system (implemented)
+│       ├── plugin.go         # Plugin interface
+│       ├── loader.go         # Dynamic .so loading
+│       ├── bridge.go         # JavaScript bridge
+│       └── registry.go       # Plugin registry
 ├── pkg/               # Public packages
 │   └── config/        # Configuration management
 │       └── package.go        # package.json handling
+├── plugins/examples/  # Example plugins
+│   ├── math/          # Math operations plugin
+│   │   ├── main.go    # Plugin source
+│   │   ├── Makefile   # Build script
+│   │   └── math.so    # Compiled plugin
+│   └── hello/         # String operations plugin
+│       ├── main.go    # Plugin source
+│       ├── Makefile   # Build script
+│       └── hello.so   # Compiled plugin
 ├── examples/          # Example applications
 │   ├── simple.js      # Basic example
+│   ├── plugin_demo.js # Plugin usage example
 │   └── package.json   # Example configuration
 └── archive/           # Legacy code
     ├── prototype/     # Original implementation
@@ -119,12 +150,10 @@ gode/
 ├── internal/build/    # Build system
 │   ├── builder.go     # Build orchestration
 │   └── bundler.go     # esbuild integration
-├── internal/builtins/ # Built-in modules
-│   ├── fs.go          # File system module
-│   ├── http.go        # HTTP module
-│   └── crypto.go      # Crypto module
-└── internal/plugins/  # Plugin system
-    └── loader.go      # Go plugin loading
+└── internal/builtins/ # Built-in modules
+    ├── fs.go          # File system module
+    ├── http.go        # HTTP module
+    └── crypto.go      # Crypto module
 ```
 
 ## Implementation Guidelines
@@ -133,23 +162,25 @@ gode/
 1. Always work through the VM abstraction, never use Goja directly
 2. Make all async operations return Promises
 3. Follow the module resolution order defined above
-4. Ensure Go plugins are properly sandboxed with permissions
+4. Go plugins load without permission requirements (simplified security model)
 
 ### Critical Implementation Details
 
 1. **Thread Safety**: JavaScript execution is single-threaded via vmQueue channel
 2. **Event Queue**: All JS operations queued to prevent race conditions
 3. **Go Integration**: Go functions run in separate goroutines, results sent back via queue
-4. **Module Loading**: Will use package.json for dependency management
+4. **Module Loading**: Uses package.json for dependency management, supports .so plugins
 5. **Build Output**: Single binary with embedded JS/assets, external .so files
+6. **Plugin System**: Dynamic loading of Go plugins with automatic JavaScript bindings via Goja
 
-### Package.json Structure (Planned)
+### Package.json Structure
 ```json
 {
   "name": "my-app",
   "dependencies": {
     "lodash": "^4.17.21",
-    "worker": "file:./plugins/worker.so"
+    "math-plugin": "file:./plugins/examples/math/math.so",
+    "hello-plugin": "file:./plugins/examples/hello/hello.so"
   },
   "gode": {
     "imports": {
@@ -169,6 +200,8 @@ gode/
 - Manual testing with curl commands
 - Benchmark scripts for performance comparison
 - Example files demonstrating different features
+- Integration tests for plugin system
+- Unit tests for core components
 
 ### Future Testing (Planned)
 - `gode test` - Built-in test runner

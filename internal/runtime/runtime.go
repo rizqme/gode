@@ -84,6 +84,20 @@ func (r *Runtime) Run(entrypoint string) error {
 	return nil
 }
 
+// ExecuteScript runs JavaScript code directly (for testing)
+func (r *Runtime) ExecuteScript(name, source string) error {
+	if r.vm == nil {
+		return fmt.Errorf("runtime not initialized")
+	}
+	
+	_, err := r.vm.RunScript(name, source)
+	if err != nil {
+		return fmt.Errorf("execution error: %w", err)
+	}
+	
+	return nil
+}
+
 // setupBuiltinModules registers all built-in modules
 func (r *Runtime) setupBuiltinModules() error {
 	// TODO: Register built-in modules like:

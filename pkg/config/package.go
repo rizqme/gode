@@ -37,7 +37,6 @@ type PermissionConfig struct {
 	AllowRead   []string `json:"allow-read,omitempty"`
 	AllowWrite  []string `json:"allow-write,omitempty"`
 	AllowEnv    []string `json:"allow-env,omitempty"`
-	AllowPlugin []string `json:"allow-plugin,omitempty"`
 }
 
 // BuildConfig defines build-time configuration
@@ -127,7 +126,6 @@ func defaultGodeConfig() GodeConfig {
 			AllowRead:   []string{},
 			AllowWrite:  []string{},
 			AllowEnv:    []string{},
-			AllowPlugin: []string{},
 		},
 		Build: BuildConfig{
 			Target: "linux-amd64",
@@ -172,9 +170,6 @@ func mergeGodeConfig(user, defaults GodeConfig) GodeConfig {
 	}
 	if len(user.Permissions.AllowEnv) > 0 {
 		result.Permissions.AllowEnv = user.Permissions.AllowEnv
-	}
-	if len(user.Permissions.AllowPlugin) > 0 {
-		result.Permissions.AllowPlugin = user.Permissions.AllowPlugin
 	}
 	
 	// Override build config if specified
