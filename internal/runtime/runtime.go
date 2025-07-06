@@ -7,6 +7,7 @@ import (
 
 	"github.com/dop251/goja"
 	"github.com/rizqme/gode/internal/modules/stream"
+	"github.com/rizqme/gode/internal/modules/test"
 	"github.com/rizqme/gode/pkg/config"
 )
 
@@ -100,6 +101,69 @@ func (r *Runtime) ExecuteScript(name, source string) error {
 	return nil
 }
 
+// runTestFileInScope executes a test file wrapped in its own function scope
+func (r *Runtime) runTestFileInScope(testFile string) error {
+	if r.vm == nil {
+		return fmt.Errorf("runtime not configured")
+	}
+	
+	// Resolve absolute path
+	absPath, err := filepath.Abs(testFile)
+	if err != nil {
+		return fmt.Errorf("failed to resolve path: %w", err)
+	}
+	
+	// Check if file exists
+	if _, err := os.Stat(absPath); os.IsNotExist(err) {
+		return fmt.Errorf("file not found: %s", testFile)
+	}
+	
+	// Read the file
+	source, err := os.ReadFile(absPath)
+	if err != nil {
+		return fmt.Errorf("failed to read file: %w", err)
+	}
+	
+	// Wrap the source in a function scope to avoid global conflicts
+	wrappedSource := fmt.Sprintf("(function() {\n%s\n})();", string(source))
+	
+	// Execute the wrapped script
+	_, err = r.vm.RunScript(testFile, wrappedSource)
+	if err != nil {
+		return fmt.Errorf("execution error: %w", err)
+	}
+	
+	return nil
+}
+
+// RunTests executes test files and returns results
+func (r *Runtime) RunTests(testFiles []string) ([]test.SuiteResult, error) {
+	if r.vm == nil {
+		return nil, fmt.Errorf("runtime not configured")
+	}
+
+	// Get the test bridge
+	runtime, ok := r.vm.GetRuntime().(*goja.Runtime)
+	if !ok {
+		return nil, fmt.Errorf("expected Goja runtime, got %T", r.vm.GetRuntime())
+	}
+
+	bridge := test.GetTestBridge(runtime)
+	if bridge == nil {
+		return nil, fmt.Errorf("test module not properly initialized")
+	}
+
+	// Execute each test file to register tests (wrapped in function scope)
+	for _, testFile := range testFiles {
+		if err := r.runTestFileInScope(testFile); err != nil {
+			return nil, fmt.Errorf("failed to load test file %s: %w", testFile, err)
+		}
+	}
+
+	// Run all registered tests
+	return bridge.RunTests()
+}
+
 // setupBuiltinModules registers all built-in modules
 func (r *Runtime) setupBuiltinModules() error {
 	// Register stream module
@@ -109,6 +173,11 @@ func (r *Runtime) setupBuiltinModules() error {
 	}
 	if err := stream.RegisterModule(runtime); err != nil {
 		return fmt.Errorf("failed to register stream module: %w", err)
+	}
+	
+	// Register test module
+	if err := test.RegisterTestModule(runtime); err != nil {
+		return fmt.Errorf("failed to register test module: %w", err)
 	}
 	
 	// TODO: Register other built-in modules like:
