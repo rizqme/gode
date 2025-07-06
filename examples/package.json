@@ -1,0 +1,15 @@
+{
+  "name": "gode-example",
+  "version": "1.0.0",
+  "type": "module",
+  "main": "simple.js",
+  "gode": {
+    "imports": {
+      "@app": "./src"
+    },
+    "permissions": {
+      "allow-read": ["./data"],
+      "allow-net": ["httpbin.org"]
+    }
+  }
+}
