@@ -560,3 +560,8 @@ type gojaContext struct {
 func (c *gojaContext) GetVM() VM {
 	return c.vm
 }
+
+// GetRuntime returns the underlying Goja runtime for direct access
+func (vm *gojaVM) GetRuntime() interface{} {
+	return vm.runtime
+}

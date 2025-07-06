@@ -32,6 +32,9 @@ type VM interface {
 	EnterContext(ctx Context)
 	LeaveContext()
 	
+	// Runtime access (for direct engine access when needed)
+	GetRuntime() interface{}
+	
 	// Cleanup
 	Dispose()
 }

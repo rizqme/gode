@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/dop251/goja"
+	"github.com/rizqme/gode/internal/modules/stream"
 	"github.com/rizqme/gode/pkg/config"
 )
 
@@ -100,7 +102,16 @@ func (r *Runtime) ExecuteScript(name, source string) error {
 
 // setupBuiltinModules registers all built-in modules
 func (r *Runtime) setupBuiltinModules() error {
-	// TODO: Register built-in modules like:
+	// Register stream module
+	runtime, ok := r.vm.GetRuntime().(*goja.Runtime)
+	if !ok {
+		return fmt.Errorf("expected Goja runtime, got %T", r.vm.GetRuntime())
+	}
+	if err := stream.RegisterModule(runtime); err != nil {
+		return fmt.Errorf("failed to register stream module: %w", err)
+	}
+	
+	// TODO: Register other built-in modules like:
 	// - gode:fs
 	// - gode:http
 	// - gode:process

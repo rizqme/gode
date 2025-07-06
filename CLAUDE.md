@@ -53,14 +53,21 @@ Gode is a modern JavaScript/TypeScript runtime built in Go, inspired by Deno. It
   - Leverages Goja's built-in Go-JavaScript type conversion
   - Example plugins: math (arithmetic operations) and hello (string operations)
   - Plugin registry for managing loaded plugins
+- **Stream Module**: Complete Node.js-compatible streams implementation
+  - Readable, Writable, Duplex, Transform, and PassThrough streams
+  - EventEmitter integration with on/emit/once methods
+  - Static methods like Readable.from for creating streams from iterables
+  - Pipeline and finished utility functions
+  - Full Go backend with JavaScript bridge for optimal performance
 
 ### Migration Path
 1. Current: Callback-based async with mutex → channel-based event queue ✓
 2. Current: Go plugin system with .so file loading ✓
-3. Next: Add Promise support to VM abstraction
-4. Future: Implement package.json loading and module resolution
-5. Future: Add esbuild integration for TypeScript
-6. Future: Implement build system for single binary output
+3. Current: Stream module with Node.js-compatible API ✓
+4. Next: Add Promise support to VM abstraction
+5. Future: Implement package.json loading and module resolution
+6. Future: Add esbuild integration for TypeScript
+7. Future: Implement build system for single binary output
 
 ## Common Development Commands
 
@@ -72,6 +79,9 @@ go build -o gode ./cmd/gode
 # Run examples
 ./gode run examples/simple.js
 ./gode run examples/plugin_demo.js
+./gode run examples/basic_stream_test.js
+./gode run examples/functional_stream_test.js
+./gode run examples/complete_stream_test.js
 
 # Get help
 ./gode help
@@ -115,7 +125,13 @@ gode/
 │   │   ├── runtime.go        # Main runtime logic
 │   │   └── module_manager.go # Module manager alias
 │   ├── modules/       # Module system
-│   │   └── manager.go        # Module resolution & loading
+│   │   ├── manager.go        # Module resolution & loading
+│   │   └── stream/           # Stream module (implemented)
+│   │       ├── stream.go     # Go stream implementations
+│   │       ├── bridge.go     # JavaScript bridge
+│   │       ├── register.go   # Module registration
+│   │       ├── stream.js     # JavaScript wrapper
+│   │       └── stream_test.go # Go unit tests
 │   └── plugins/       # Plugin system (implemented)
 │       ├── plugin.go         # Plugin interface
 │       ├── loader.go         # Dynamic .so loading
@@ -136,6 +152,9 @@ gode/
 ├── examples/          # Example applications
 │   ├── simple.js      # Basic example
 │   ├── plugin_demo.js # Plugin usage example
+│   ├── basic_stream_test.js      # Basic stream test
+│   ├── functional_stream_test.js # Functional stream test
+│   ├── complete_stream_test.js   # Complete stream test
 │   └── package.json   # Example configuration
 └── archive/           # Legacy code
     ├── prototype/     # Original implementation
@@ -153,7 +172,8 @@ gode/
 └── internal/builtins/ # Built-in modules
     ├── fs.go          # File system module
     ├── http.go        # HTTP module
-    └── crypto.go      # Crypto module
+    ├── crypto.go      # Crypto module
+    └── net.go         # Network module
 ```
 
 ## Implementation Guidelines
@@ -172,6 +192,7 @@ gode/
 4. **Module Loading**: Uses package.json for dependency management, supports .so plugins
 5. **Build Output**: Single binary with embedded JS/assets, external .so files
 6. **Plugin System**: Dynamic loading of Go plugins with automatic JavaScript bindings via Goja
+7. **Stream System**: Node.js-compatible streams with Go backend and JavaScript EventEmitter bridge
 
 ### Package.json Structure
 ```json
@@ -202,6 +223,8 @@ gode/
 - Example files demonstrating different features
 - Integration tests for plugin system
 - Unit tests for core components
+- Stream module tests (Go unit tests + JavaScript integration tests)
+- EventEmitter functionality tests
 
 ### Future Testing (Planned)
 - `gode test` - Built-in test runner
