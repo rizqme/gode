@@ -403,7 +403,8 @@ When creating commits, follow these guidelines:
 - Use conventional commit format: `type: description`
 - Common types: `feat`, `fix`, `docs`, `refactor`, `test`, `chore`
 - Keep descriptions concise and descriptive
-- Do not mention external tools or AI assistance in commit messages
+- **NEVER mention Claude, AI assistance, or external tools in commit messages**
 - Focus on what was changed and why
 - Use present tense ("add feature" not "added feature")
 - Add body text for complex changes explaining the implementation details
+- Commit messages should appear as if written by a human developer

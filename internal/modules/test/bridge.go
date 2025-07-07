@@ -2,38 +2,35 @@ package test
 
 import (
 	"fmt"
-	"github.com/dop251/goja"
+	"github.com/rizqme/gode/goja"
 )
 
-// VMInterface represents the methods we need from the VM 
+// RuntimeInterface represents the methods we need from the runtime
 // to avoid importing the runtime package and creating cycles
-type VMInterface interface {
+type RuntimeInterface interface {
 	SetGlobal(name string, value interface{}) error
-	NewObject() JSObject // Add method to create JS objects
-	CallFunction(fn interface{}, args ...interface{}) (interface{}, error) // Add method to call JS functions
-	RunScript(name string, source string) (interface{}, error) // Add method to run JS code
-	GetRuntime() *goja.Runtime // Add method to get the underlying Goja runtime
-	CallJSFunction(fn interface{}) error // Add method to call a JS function and return any error
+	RunScript(name string, source string) (interface{}, error)
+	GetGojaRuntime() *goja.Runtime
+	CallJSFunction(fn interface{}) error
 }
 
-// JSObject represents a JavaScript object interface
-type JSObject interface {
-	Set(key string, value interface{}) error
-	SetMethod(name string, fn func(args ...interface{}) interface{}) error
-}
-
-// Bridge provides a basic test module implementation that works through VM abstraction
+// Bridge provides a basic test module implementation that works through runtime
 type Bridge struct {
-	vm     VMInterface
-	runner *TestRunner
+	runtime RuntimeInterface
+	runner  *TestRunner
 }
 
 // NewBridge creates a new test bridge
-func NewBridge(vm VMInterface) *Bridge {
+func NewBridge(runtime RuntimeInterface) *Bridge {
 	return &Bridge{
-		vm:     vm,
-		runner: NewTestRunner(),
+		runtime: runtime,
+		runner:  NewTestRunner(),
 	}
+}
+
+// Reset clears all test state for a fresh run
+func (b *Bridge) Reset() {
+	b.runner.Reset()
 }
 
 // wrapJSFunction wraps a JavaScript function to return a Go error
@@ -50,26 +47,9 @@ func (b *Bridge) wrapJSFunction(fn interface{}) func() error {
 			}
 		}()
 		
-		// Get underlying Goja runtime for direct function calling
-		runtime := b.vm.GetRuntime()
-		if runtime == nil {
-			return fmt.Errorf("cannot access JavaScript runtime")
-		}
-		
-		// Handle Goja function type specifically
+		// Handle Goja function type specifically - use CallJSFunction which goes through queue
 		if jsFunc, ok := fn.(func(goja.FunctionCall) goja.Value); ok {
-			// Create proper function call context
-			call := goja.FunctionCall{
-				This: runtime.GlobalObject(),
-				Arguments: []goja.Value{},
-			}
-			
-			// Execute JavaScript function
-			result := jsFunc(call)
-			_ = result // Ignore return value for void test functions
-			
-			// If we reach here without panic, test passed
-			return nil
+			return b.runtime.CallJSFunction(jsFunc)
 		}
 		
 		return fmt.Errorf("cannot execute function (type: %T)", fn)
@@ -79,7 +59,7 @@ func (b *Bridge) wrapJSFunction(fn interface{}) func() error {
 // RegisterGlobals registers test functions as global variables in the JS runtime
 func (b *Bridge) RegisterGlobals() error {
 	// Register describe function
-	b.vm.SetGlobal("describe", func(name string, fn func()) {
+	b.runtime.SetGlobal("describe", func(name string, fn func()) {
 		b.runner.Describe(name, fn)
 	})
 	
@@ -97,16 +77,16 @@ func (b *Bridge) RegisterGlobals() error {
 		
 		b.runner.Test(name, b.wrapJSFunction(fn), opts)
 	}
-	b.vm.SetGlobal("__test", testFn)
-	b.vm.SetGlobal("it", testFn)
+	b.runtime.SetGlobal("__test", testFn)
+	b.runtime.SetGlobal("it", testFn)
 	
 	// Register test.skip function
-	b.vm.SetGlobal("__testSkip", func(name string, fn interface{}) {
+	b.runtime.SetGlobal("__testSkip", func(name string, fn interface{}) {
 		b.runner.Test(name, b.wrapJSFunction(fn), &TestOptions{Skip: true})
 	})
 	
 	// Register test.only function  
-	b.vm.SetGlobal("__testOnly", func(name string, fn interface{}) {
+	b.runtime.SetGlobal("__testOnly", func(name string, fn interface{}) {
 		b.runner.Test(name, b.wrapJSFunction(fn), &TestOptions{Only: true})
 	})
 	
@@ -121,12 +101,12 @@ func (b *Bridge) RegisterGlobals() error {
 	`
 	
 	// Execute the wrapper script
-	if _, err := b.vm.RunScript("test-wrapper", testWrapper); err != nil {
+	if _, err := b.runtime.RunScript("test-wrapper", testWrapper); err != nil {
 		return fmt.Errorf("failed to create test wrapper: %w", err)
 	}
 	
 	// Register simple error throwing function for JavaScript-based expectations
-	b.vm.SetGlobal("__throwTestError", func(message string) {
+	b.runtime.SetGlobal("__throwTestError", func(message string) {
 		panic(fmt.Errorf(message))
 	})
 	
@@ -136,19 +116,19 @@ func (b *Bridge) RegisterGlobals() error {
 	}
 	
 	// Register hook functions
-	b.vm.SetGlobal("beforeEach", func(fn interface{}) {
+	b.runtime.SetGlobal("beforeEach", func(fn interface{}) {
 		b.runner.BeforeEach(b.wrapJSFunction(fn))
 	})
 	
-	b.vm.SetGlobal("afterEach", func(fn interface{}) {
+	b.runtime.SetGlobal("afterEach", func(fn interface{}) {
 		b.runner.AfterEach(b.wrapJSFunction(fn))
 	})
 	
-	b.vm.SetGlobal("beforeAll", func(fn interface{}) {
+	b.runtime.SetGlobal("beforeAll", func(fn interface{}) {
 		b.runner.BeforeAll(b.wrapJSFunction(fn))
 	})
 	
-	b.vm.SetGlobal("afterAll", func(fn interface{}) {
+	b.runtime.SetGlobal("afterAll", func(fn interface{}) {
 		b.runner.AfterAll(b.wrapJSFunction(fn))
 	})
 	
@@ -377,7 +357,8 @@ func (b *Bridge) setupExpectInJS() error {
 		globalThis.expect = expect;
 	`
 	
-	_, err := b.vm.RunScript("expect-setup", expectJS)
+	// Setup expect API through the queue
+	_, err := b.runtime.RunScript("expect-setup", expectJS)
 	return err
 }
 

@@ -2,9 +2,9 @@ module github.com/rizqme/gode
 
 go 1.21
 
-require github.com/dop251/goja v0.0.0-20231027120936-b396bb4c349d
+require github.com/rizqme/gode/goja v0.0.0
 
-replace github.com/dop251/goja => ./goja
+replace github.com/rizqme/gode/goja => ./goja
 
 require (
 	github.com/dlclark/regexp2 v1.11.4 // indirect

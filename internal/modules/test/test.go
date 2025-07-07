@@ -90,6 +90,18 @@ func NewTestRunner() *TestRunner {
 	}
 }
 
+// Reset clears all test state for a fresh run
+func (tr *TestRunner) Reset() {
+	tr.mu.Lock()
+	defer tr.mu.Unlock()
+	
+	tr.suites = make(map[string]*TestSuite)
+	tr.currentSuite = nil
+	tr.hasOnly = false
+	tr.beforeAllHooks = nil
+	tr.afterAllHooks = nil
+}
+
 // Describe creates a new test suite
 func (tr *TestRunner) Describe(name string, fn func()) {
 	tr.mu.Lock()

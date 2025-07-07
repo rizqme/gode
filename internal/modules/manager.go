@@ -31,19 +31,19 @@ func NewModuleManager() *ModuleManager {
 }
 
 // NewModuleManagerWithRuntime creates a new module manager with plugin support
-func NewModuleManagerWithRuntime(vm interface{}, rt interface{}) *ModuleManager {
+func NewModuleManagerWithRuntime(runtime interface{}) *ModuleManager {
 	m := &ModuleManager{
 		cache:      make(map[string]string),
 		importMaps: make(map[string]string),
 		registries: make(map[string]string),
-		vm:         vm,
-		runtime:    rt,
+		runtime:    runtime,
 	}
 	
-	if vm != nil && rt != nil {
+	if runtime != nil {
 		// Cast to the plugin VM interface
-		if pluginVM, ok := vm.(plugins.VM); ok {
-			m.pluginRegistry = plugins.NewRegistry(pluginVM, rt)
+		if pluginVM, ok := runtime.(plugins.VM); ok {
+			m.pluginRegistry = plugins.NewRegistry(pluginVM, runtime)
+			m.vm = runtime // Keep for backward compatibility
 		}
 	}
 	
@@ -93,6 +93,22 @@ func (m *ModuleManager) Load(specifier string) (string, error) {
 	source, err := m.loadFromPath(resolved)
 	if err != nil {
 		return "", err
+	}
+	
+	// For plugins, we need to register with the original specifier name
+	if strings.HasSuffix(resolved, ".so") && source == "" {
+		// Register the plugin with its dependency name if loaded from dependencies
+		if m.config != nil && m.config.Dependencies != nil {
+			if _, isDep := m.config.Dependencies[specifier]; isDep {
+				if rt, ok := m.runtime.(interface{ RegisterModule(string, interface{}) }); ok {
+					// Get the plugin from the base name first
+					pluginName := filepath.Base(strings.TrimSuffix(resolved, filepath.Ext(resolved)))
+					if jsObj, exists := m.pluginRegistry.GetPlugin(pluginName); exists {
+						rt.RegisterModule(specifier, jsObj)
+					}
+				}
+			}
+		}
 	}
 	
 	// Cache the result
@@ -239,13 +255,13 @@ func (m *ModuleManager) loadGoPlugin(path string) (string, error) {
 		return "", fmt.Errorf("failed to load plugin %s: %v", path, err)
 	}
 	
-	// Register as a module in the VM if it supports it
+	// Register as a module in the runtime
 	pluginName := filepath.Base(strings.TrimSuffix(path, filepath.Ext(path)))
-	if pluginVM, ok := m.vm.(plugins.VM); ok {
-		pluginVM.RegisterModule(pluginName, jsObj)
+	if rt, ok := m.runtime.(interface{ RegisterModule(string, interface{}) }); ok {
+		rt.RegisterModule(pluginName, jsObj)
 	}
 	
-	// Return empty string as plugins are registered directly with the VM
+	// Return empty string as plugins are registered directly
 	return "", nil
 }
 

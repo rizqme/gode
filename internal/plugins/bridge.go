@@ -2,8 +2,8 @@ package plugins
 
 // JavaScript VM interfaces (to avoid import cycles)
 type VM interface {
-	NewObject() Object
-	RegisterModule(name string, exports Object)
+	NewObjectForPlugins() Object
+	RegisterModule(name string, exports interface{})
 }
 
 type Object interface {
@@ -24,7 +24,7 @@ func NewBridge(vm VM) *Bridge {
 // Goja handles Go-JS conversion automatically, so we just expose the functions directly
 func (b *Bridge) WrapPlugin(plugin Plugin) (Object, error) {
 	exports := plugin.Exports()
-	obj := b.vm.NewObject()
+	obj := b.vm.NewObjectForPlugins()
 	
 	// Add metadata
 	obj.Set("__pluginName", plugin.Name())

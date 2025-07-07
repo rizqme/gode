@@ -1,50 +1,220 @@
 package runtime
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
+	"sync"
 
-	"github.com/dop251/goja"
+	"github.com/rizqme/gode/goja"
+	"github.com/rizqme/gode/internal/modules"
+	"github.com/rizqme/gode/internal/modules/http"
 	"github.com/rizqme/gode/internal/modules/stream"
 	"github.com/rizqme/gode/internal/modules/test"
+	"github.com/rizqme/gode/internal/modules/timers"
+	"github.com/rizqme/gode/internal/plugins"
 	"github.com/rizqme/gode/pkg/config"
 )
 
 // Runtime represents the main Gode runtime
 type Runtime struct {
-	vm          VM
-	config      *config.PackageJSON
-	projectRoot string
-	modules     *ModuleManager
+	runtime       *goja.Runtime
+	config        *config.PackageJSON
+	projectRoot   string
+	modules       map[string]goja.Value
+	timersBridge  *timers.Bridge
+	vmQueue       chan func()
+	moduleManager *modules.ModuleManager
+	mu            sync.RWMutex
+	disposed      bool
+}
+
+// gojaObject is a simple adapter to satisfy plugin interfaces
+type gojaObject struct {
+	obj *goja.Object
+}
+
+func (o *gojaObject) Set(key string, value interface{}) error {
+	return o.obj.Set(key, value)
 }
 
 // New creates a new Gode runtime instance
 func New() *Runtime {
-	return &Runtime{
-		modules: NewModuleManager(),
+	r := &Runtime{
+		runtime: goja.New(),
+		modules: make(map[string]goja.Value),
+		vmQueue: make(chan func(), 1024),
 	}
+	
+	// Start the event loop goroutine
+	go r.eventLoop()
+	
+	return r
+}
+
+// eventLoop processes JavaScript operations sequentially to maintain thread safety
+func (r *Runtime) eventLoop() {
+	for fn := range r.vmQueue {
+		if r.disposed {
+			break
+		}
+		fn()
+	}
+}
+
+// QueueJSOperation queues a JavaScript operation to be executed in the main JS thread
+func (r *Runtime) QueueJSOperation(fn func()) {
+	if r.disposed {
+		return
+	}
+	
+	select {
+	case r.vmQueue <- fn:
+		// Operation queued successfully
+	default:
+		// Queue is full, skip the operation to avoid blocking
+	}
+}
+
+// GetGojaRuntime returns the underlying Goja runtime
+func (r *Runtime) GetGojaRuntime() *goja.Runtime {
+	return r.runtime
+}
+
+// setupGlobals sets up built-in global objects and functions
+func (r *Runtime) setupGlobals() error {
+	done := make(chan error, 1)
+	
+	r.QueueJSOperation(func() {
+		// Add console.log and console.error
+		console := r.runtime.NewObject()
+		console.Set("log", func(args ...interface{}) {
+			fmt.Println(args...)
+		})
+		console.Set("error", func(args ...interface{}) {
+			fmt.Fprintln(os.Stderr, args...)
+		})
+		r.runtime.Set("console", console)
+		
+		// Add JSON global
+		jsonObj := r.runtime.NewObject()
+		jsonObj.Set("stringify", func(obj interface{}) interface{} {
+			return r.runtime.ToValue(r.jsonStringify(obj))
+		})
+		jsonObj.Set("parse", func(str string) interface{} {
+			return r.runtime.ToValue(r.jsonParse(str))
+		})
+		r.runtime.Set("JSON", jsonObj)
+		
+		// Add require function
+		r.runtime.Set("require", func(specifier string) interface{} {
+			// Check built-in modules first
+			if module, exists := r.modules[specifier]; exists {
+				return module
+			}
+			
+			// Check JavaScript module cache
+			if val := r.runtime.Get("__gode_modules"); val != nil && !goja.IsUndefined(val) && !goja.IsNull(val) {
+				if obj := val.ToObject(r.runtime); obj != nil {
+					if moduleVal := obj.Get(specifier); moduleVal != nil && !goja.IsUndefined(moduleVal) {
+						return moduleVal
+					}
+				}
+			}
+			
+			// Try module manager if available
+			if r.moduleManager != nil {
+				source, err := r.moduleManager.Load(specifier)
+				if err == nil {
+					// If source is empty, it means the module was loaded directly (like plugins)
+					if source == "" {
+						// Check if it was registered as a module
+						// First check with the original specifier
+						if module, exists := r.modules[specifier]; exists {
+							return module
+						}
+						// Then check with just the base name (for plugins)
+						baseName := filepath.Base(strings.TrimSuffix(specifier, filepath.Ext(specifier)))
+						if module, exists := r.modules[baseName]; exists {
+							return module
+						}
+					}
+					// Otherwise execute the source
+					val, err := r.runtime.RunString(source)
+					if err == nil {
+						return val
+					}
+				}
+			}
+			
+			panic(r.runtime.NewGoError(fmt.Errorf("module not found: %s", specifier)))
+		})
+		
+		done <- nil
+	})
+	
+	return <-done
+}
+
+// JSON implementation methods
+func (r *Runtime) jsonStringify(obj interface{}) string {
+	if obj == nil {
+		return "null"
+	}
+	
+	// If it's a Goja value, export it first
+	if gojaVal, ok := obj.(goja.Value); ok {
+		if goja.IsNull(gojaVal) {
+			return "null"
+		}
+		if goja.IsUndefined(gojaVal) {
+			return "undefined"
+		}
+		obj = gojaVal.Export()
+	}
+	
+	// Convert Goja objects to Go values for proper JSON marshaling
+	if gojaObj, ok := obj.(*goja.Object); ok {
+		goValue := gojaObj.Export()
+		jsonBytes, err := json.Marshal(goValue)
+		if err != nil {
+			return "null"
+		}
+		return string(jsonBytes)
+	}
+	
+	// Handle direct Go values (including numbers, strings, booleans)
+	jsonBytes, err := json.Marshal(obj)
+	if err != nil {
+		return "null"
+	}
+	return string(jsonBytes)
+}
+
+func (r *Runtime) jsonParse(str string) interface{} {
+	var result interface{}
+	err := json.Unmarshal([]byte(str), &result)
+	if err != nil {
+		panic(r.runtime.NewGoError(fmt.Errorf("SyntaxError: Unexpected token in JSON at position 0")))
+	}
+	return result
 }
 
 // Configure sets up the runtime with the given configuration
 func (r *Runtime) Configure(cfg *config.PackageJSON) error {
 	r.config = cfg
 	
-	// Create VM with configuration
-	vmOptions := &VMOptions{
-		ModuleLoader: r.modules,
+	// Create module manager with plugin support
+	r.moduleManager = modules.NewModuleManagerWithRuntime(r)
+	if cfg != nil {
+		r.moduleManager.Configure(cfg)
 	}
 	
-	vm, err := NewVM(vmOptions)
-	if err != nil {
-		return fmt.Errorf("failed to create VM: %w", err)
-	}
-	
-	r.vm = vm
-	
-	// Setup module resolution
-	if err := r.modules.Configure(cfg); err != nil {
-		return fmt.Errorf("failed to configure module manager: %w", err)
+	// Setup built-in globals
+	if err := r.setupGlobals(); err != nil {
+		return fmt.Errorf("failed to setup globals: %w", err)
 	}
 	
 	// Setup built-in modules
@@ -57,7 +227,7 @@ func (r *Runtime) Configure(cfg *config.PackageJSON) error {
 
 // Run executes the given entry point
 func (r *Runtime) Run(entrypoint string) error {
-	if r.vm == nil {
+	if r.runtime == nil {
 		return fmt.Errorf("runtime not configured")
 	}
 	
@@ -78,10 +248,21 @@ func (r *Runtime) Run(entrypoint string) error {
 		return fmt.Errorf("failed to read file: %w", err)
 	}
 	
-	// Execute the script
-	_, err = r.vm.RunScript(entrypoint, string(source))
+	// Execute the script through the queue
+	done := make(chan error, 1)
+	r.QueueJSOperation(func() {
+		_, err := r.runtime.RunString(string(source))
+		done <- err
+	})
+	
+	err = <-done
 	if err != nil {
 		return fmt.Errorf("execution error: %w", err)
+	}
+	
+	// Wait for any active timers to complete
+	if r.timersBridge != nil {
+		r.timersBridge.GetTimersModule().WaitForTimers(0) // Use default timeout
 	}
 	
 	return nil
@@ -89,11 +270,17 @@ func (r *Runtime) Run(entrypoint string) error {
 
 // ExecuteScript runs JavaScript code directly (for testing)
 func (r *Runtime) ExecuteScript(name, source string) error {
-	if r.vm == nil {
+	if r.runtime == nil {
 		return fmt.Errorf("runtime not initialized")
 	}
 	
-	_, err := r.vm.RunScript(name, source)
+	done := make(chan error, 1)
+	r.QueueJSOperation(func() {
+		_, err := r.runtime.RunString(source)
+		done <- err
+	})
+	
+	err := <-done
 	if err != nil {
 		return fmt.Errorf("execution error: %w", err)
 	}
@@ -103,7 +290,7 @@ func (r *Runtime) ExecuteScript(name, source string) error {
 
 // runTestFileInScope executes a test file wrapped in its own function scope
 func (r *Runtime) runTestFileInScope(testFile string) error {
-	if r.vm == nil {
+	if r.runtime == nil {
 		return fmt.Errorf("runtime not configured")
 	}
 	
@@ -124,11 +311,16 @@ func (r *Runtime) runTestFileInScope(testFile string) error {
 		return fmt.Errorf("failed to read file: %w", err)
 	}
 	
-	// Wrap the source in a function scope to avoid global conflicts
-	wrappedSource := fmt.Sprintf("(function() {\n%s\n})();", string(source))
+	// Execute through the queue
+	done := make(chan error, 1)
+	r.QueueJSOperation(func() {
+		// Wrap the source in a function scope to avoid global conflicts
+		wrappedSource := fmt.Sprintf("(function() {\n%s\n})();", string(source))
+		_, err := r.runtime.RunString(wrappedSource)
+		done <- err
+	})
 	
-	// Execute the wrapped script
-	_, err = r.vm.RunScript(testFile, wrappedSource)
+	err = <-done
 	if err != nil {
 		return fmt.Errorf("execution error: %w", err)
 	}
@@ -138,16 +330,18 @@ func (r *Runtime) runTestFileInScope(testFile string) error {
 
 // RunTests executes test files and returns results
 func (r *Runtime) RunTests(testFiles []string) ([]test.SuiteResult, error) {
-	if r.vm == nil {
+	if r.runtime == nil {
 		return nil, fmt.Errorf("runtime not configured")
 	}
 
-	// Get the test bridge using adapter
-	testAdapter := &testVMAdapter{vm: r.vm}
-	bridge := test.GetTestBridge(testAdapter)
+	// Get the test bridge using direct runtime
+	bridge := test.GetTestBridge(r)
 	if bridge == nil {
 		return nil, fmt.Errorf("test module not properly initialized")
 	}
+	
+	// Reset test state to avoid pollution between runs
+	bridge.Reset()
 
 	// Execute each test file to register tests (wrapped in function scope)
 	for _, testFile := range testFiles {
@@ -162,135 +356,153 @@ func (r *Runtime) RunTests(testFiles []string) ([]test.SuiteResult, error) {
 
 // setupBuiltinModules registers all built-in modules
 func (r *Runtime) setupBuiltinModules() error {
-	// Create adapters to break the import cycle
-	streamAdapter := &streamVMAdapter{vm: r.vm}
-	testAdapter := &testVMAdapter{vm: r.vm}
-	
-	// Register stream module
-	if err := stream.RegisterModule(streamAdapter); err != nil {
-		return fmt.Errorf("failed to register stream module: %w", err)
+	// Register HTTP module (fetch)
+	if err := http.RegisterHTTPModule(r); err != nil {
+		return fmt.Errorf("failed to register HTTP module: %w", err)
 	}
 	
+	// Register timers module (setTimeout, setInterval)
+	bridge, err := timers.RegisterTimersModule(r)
+	if err != nil {
+		return fmt.Errorf("failed to register timers module: %w", err)
+	}
+	r.timersBridge = bridge
+	
 	// Register test module
-	if err := test.RegisterTestModule(testAdapter); err != nil {
+	if err := test.RegisterTestModule(r); err != nil {
 		return fmt.Errorf("failed to register test module: %w", err)
+	}
+	
+	// Register stream module
+	if err := stream.RegisterModule(r); err != nil {
+		return fmt.Errorf("failed to register stream module: %w", err)
 	}
 	
 	// TODO: Register other built-in modules like:
 	// - gode:fs
-	// - gode:http
 	// - gode:process
 	// - gode:crypto
 	// etc.
 	
 	// Example: Register a simple module
-	module := r.vm.NewObject()
-	module.Set("version", "0.1.0-dev")
-	module.Set("platform", "gode")
-	
-	r.vm.RegisterModule("gode:core", module)
+	done := make(chan error, 1)
+	r.QueueJSOperation(func() {
+		module := r.runtime.NewObject()
+		module.Set("version", "0.1.0-dev")
+		module.Set("platform", "gode")
+		r.modules["gode:core"] = r.runtime.ToValue(module)
+		done <- nil
+	})
+	<-done
 	
 	return nil
 }
 
-// Adapter types to break import cycles
-
-// streamVMAdapter adapts VM interface for stream module
-type streamVMAdapter struct {
-	vm VM
+// SetGlobal sets a global variable in the JavaScript runtime
+func (r *Runtime) SetGlobal(name string, value interface{}) error {
+	done := make(chan error, 1)
+	r.QueueJSOperation(func() {
+		r.runtime.Set(name, value)
+		done <- nil
+	})
+	return <-done
 }
 
-// streamObjectAdapter adapts Object interface for stream module
-type streamObjectAdapter struct {
-	obj Object
-}
-
-func (s *streamObjectAdapter) Set(key string, value interface{}) error {
-	return s.obj.Set(key, value)
-}
-
-func (s *streamVMAdapter) NewObject() stream.Object {
-	return &streamObjectAdapter{obj: s.vm.NewObject()}
-}
-
-func (s *streamVMAdapter) RegisterModule(name string, exports stream.Object) {
-	// Extract the underlying Object from the adapter
-	if adapter, ok := exports.(*streamObjectAdapter); ok {
-		s.vm.RegisterModule(name, adapter.obj)
+// RunScript executes JavaScript code and returns the result
+func (r *Runtime) RunScript(name string, source string) (interface{}, error) {
+	type result struct {
+		value interface{}
+		err   error
 	}
+	done := make(chan result, 1)
+	
+	r.QueueJSOperation(func() {
+		val, err := r.runtime.RunString(source)
+		if err != nil {
+			done <- result{nil, err}
+			return
+		}
+		done <- result{val.Export(), nil}
+	})
+	
+	res := <-done
+	return res.value, res.err
 }
 
-// testVMAdapter adapts VM interface for test module
-type testVMAdapter struct {
-	vm VM
-}
-
-func (t *testVMAdapter) SetGlobal(name string, value interface{}) error {
-	return t.vm.SetGlobal(name, value)
-}
-
-func (t *testVMAdapter) NewObject() test.JSObject {
-	return &testObjectAdapter{obj: t.vm.NewObject()}
-}
-
-func (t *testVMAdapter) CallFunction(fn interface{}, args ...interface{}) (interface{}, error) {
-	// For now, we don't need this method since we're using reflection in the bridge
-	return nil, fmt.Errorf("CallFunction not implemented")
-}
-
-func (t *testVMAdapter) RunScript(name string, source string) (interface{}, error) {
-	value, err := t.vm.RunScript(name, source)
-	if err != nil {
-		return nil, err
-	}
-	return value.Export(), nil
-}
-
-func (t *testVMAdapter) GetRuntime() *goja.Runtime {
-	// We need to get the underlying Goja runtime from the VM
-	// This requires adding a method to the VM interface
-	if gojaVM, ok := t.vm.(*gojaVM); ok {
-		return gojaVM.runtime
-	}
-	return nil
-}
-
-func (t *testVMAdapter) CallJSFunction(fn interface{}) error {
-	// Handle Goja function type directly
-	if jsFunc, ok := fn.(func(goja.FunctionCall) goja.Value); ok {
-		// Get the underlying Goja runtime to create a proper FunctionCall
-		if gojaVM, ok := t.vm.(*gojaVM); ok {
+// CallJSFunction calls a JavaScript function
+func (r *Runtime) CallJSFunction(fn interface{}) error {
+	done := make(chan error, 1)
+	
+	r.QueueJSOperation(func() {
+		// Handle Goja function type directly
+		if jsFunc, ok := fn.(func(goja.FunctionCall) goja.Value); ok {
 			// Create a proper FunctionCall with the runtime
 			call := goja.FunctionCall{
-				This: gojaVM.runtime.GlobalObject(),
+				This:      r.runtime.GlobalObject(),
 				Arguments: []goja.Value{},
 			}
 			result := jsFunc(call)
 			_ = result // Ignore return value
-			return nil
+			done <- nil
+			return
 		}
-		return fmt.Errorf("cannot access Goja runtime")
-	}
-	return fmt.Errorf("cannot call JavaScript function (type: %T)", fn)
+		done <- fmt.Errorf("cannot call JavaScript function (type: %T)", fn)
+	})
+	
+	return <-done
 }
 
-// testObjectAdapter adapts Object interface for test module
-type testObjectAdapter struct {
-	obj Object
+// NewObject creates a new JavaScript object
+func (r *Runtime) NewObject() *goja.Object {
+	done := make(chan *goja.Object, 1)
+	r.QueueJSOperation(func() {
+		done <- r.runtime.NewObject()
+	})
+	return <-done
 }
 
-func (o *testObjectAdapter) Set(key string, value interface{}) error {
-	return o.obj.Set(key, value)
+// NewObjectForPlugins creates a new JavaScript object (implements plugins.VM interface)
+func (r *Runtime) NewObjectForPlugins() plugins.Object {
+	done := make(chan plugins.Object, 1)
+	r.QueueJSOperation(func() {
+		done <- &gojaObject{obj: r.runtime.NewObject()}
+	})
+	return <-done
 }
 
-func (o *testObjectAdapter) SetMethod(name string, fn func(args ...interface{}) interface{}) error {
-	// Goja will handle the conversion automatically
-	return o.obj.Set(name, fn)
+// RegisterModule registers a module in the runtime
+func (r *Runtime) RegisterModule(name string, exports interface{}) {
+	r.QueueJSOperation(func() {
+		// Handle different types of exports
+		switch v := exports.(type) {
+		case *goja.Object:
+			r.modules[name] = r.runtime.ToValue(v)
+		case plugins.Object:
+			// Convert plugin object to goja object
+			if gObj, ok := v.(*gojaObject); ok {
+				r.modules[name] = r.runtime.ToValue(gObj.obj)
+			}
+		default:
+			// Try to convert as is
+			r.modules[name] = r.runtime.ToValue(exports)
+		}
+	})
 }
 
 // Dispose cleans up the runtime
 func (r *Runtime) Dispose() {
-	if r.vm != nil {
-		r.vm.Dispose()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	
+	if r.disposed {
+		return // Already disposed
 	}
+	
+	// Clean up timers before disposing
+	if r.timersBridge != nil {
+		r.timersBridge.GetTimersModule().Cleanup()
+	}
+	
+	r.disposed = true
+	close(r.vmQueue)
 }

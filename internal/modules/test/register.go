@@ -6,8 +6,8 @@ import ()
 var globalBridge *Bridge
 
 // RegisterTestModule registers the test module in the JavaScript runtime
-func RegisterTestModule(vm VMInterface) error {
-	globalBridge = NewBridge(vm)
+func RegisterTestModule(runtime RuntimeInterface) error {
+	globalBridge = NewBridge(runtime)
 	
 	// Register global test functions
 	err := globalBridge.RegisterGlobals()
@@ -16,17 +16,17 @@ func RegisterTestModule(vm VMInterface) error {
 	}
 
 	// Store bridge in runtime for later access
-	vm.SetGlobal("__gode_test_bridge", globalBridge)
+	runtime.SetGlobal("__gode_test_bridge", globalBridge)
 
 	return nil
 }
 
 // GetTestBridge retrieves the test bridge from the runtime
-func GetTestBridge(vm VMInterface) *Bridge {
+func GetTestBridge(runtime RuntimeInterface) *Bridge {
 	// Return the global bridge instance that was registered
 	if globalBridge == nil {
 		// If not initialized, create a new one (shouldn't happen in normal flow)
-		globalBridge = NewBridge(vm)
+		globalBridge = NewBridge(runtime)
 	}
 	return globalBridge
 }
