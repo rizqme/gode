@@ -11,6 +11,7 @@ import (
 
 	"github.com/rizqme/gode/goja"
 	"github.com/rizqme/gode/internal/modules"
+	"github.com/rizqme/gode/internal/modules/globals"
 	"github.com/rizqme/gode/internal/modules/http"
 	"github.com/rizqme/gode/internal/modules/stream"
 	"github.com/rizqme/gode/internal/modules/test"
@@ -32,6 +33,7 @@ type Runtime struct {
 	mu            sync.RWMutex
 	disposed      bool
 	operationID   int64
+	argv          []string
 }
 
 // gojaObject is a simple adapter to satisfy plugin interfaces
@@ -88,20 +90,15 @@ func (r *Runtime) GetGojaRuntime() *goja.Runtime {
 
 // setupGlobals sets up built-in global objects and functions
 func (r *Runtime) setupGlobals() error {
+	// Register all new globals (process, Buffer, console, etc.)
+	if err := globals.RegisterGlobals(r, r.argv); err != nil {
+		return fmt.Errorf("failed to register globals: %w", err)
+	}
+	
 	done := make(chan error, 1)
 	
 	r.QueueJSOperation(func() {
-		// Add console.log and console.error
-		console := r.runtime.NewObject()
-		console.Set("log", func(args ...interface{}) {
-			fmt.Println(args...)
-		})
-		console.Set("error", func(args ...interface{}) {
-			fmt.Fprintln(os.Stderr, args...)
-		})
-		r.runtime.Set("console", console)
-		
-		// Add JSON global
+		// Add JSON global (keep custom implementation for now)
 		jsonObj := r.runtime.NewObject()
 		jsonObj.Set("stringify", func(obj interface{}) interface{} {
 			return r.runtime.ToValue(r.jsonStringify(obj))
@@ -213,8 +210,15 @@ func (r *Runtime) jsonParse(str string) interface{} {
 }
 
 // Configure sets up the runtime with the given configuration
-func (r *Runtime) Configure(cfg *config.PackageJSON) error {
+func (r *Runtime) Configure(cfg *config.PackageJSON, argv ...[]string) error {
 	r.config = cfg
+	
+	// Set argv if provided
+	if len(argv) > 0 {
+		r.argv = argv[0]
+	} else {
+		r.argv = os.Args
+	}
 	
 	// Create module manager with plugin support
 	r.moduleManager = modules.NewModuleManagerWithRuntime(r)

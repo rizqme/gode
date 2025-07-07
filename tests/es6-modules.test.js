@@ -230,7 +230,9 @@ describe("ES6 Module System", () => {
                 eval(`
                     export const es6Export = "new";
                     if (typeof module !== 'undefined') {
-                        module.exports = { commonjs: "old" };
+                        // Create a local copy to avoid modifying global module
+                        var localModule = { exports: {} };
+                        localModule.exports = { commonjs: "old" };
                     }
                 `);
             }).not.toThrow();
