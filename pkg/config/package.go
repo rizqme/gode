@@ -29,6 +29,7 @@ type GodeConfig struct {
 	Registries  map[string]string   `json:"registries,omitempty"`
 	Permissions PermissionConfig    `json:"permissions,omitempty"`
 	Build       BuildConfig         `json:"build,omitempty"`
+	Test        TestConfig          `json:"test,omitempty"`
 }
 
 // PermissionConfig defines security permissions
@@ -45,6 +46,13 @@ type BuildConfig struct {
 	External []string `json:"external,omitempty"`
 	Target   string   `json:"target,omitempty"`
 	Minify   bool     `json:"minify,omitempty"`
+}
+
+// TestConfig defines test-related configuration
+type TestConfig struct {
+	Patterns []string `json:"patterns,omitempty"` // Test file patterns (e.g., ["**/*.test.js", "tests/**/*.js"])
+	Exclude  []string `json:"exclude,omitempty"`  // Patterns to exclude
+	Timeout  int      `json:"timeout,omitempty"`  // Test timeout in milliseconds
 }
 
 // FindProjectRoot finds the nearest directory containing package.json

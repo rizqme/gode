@@ -2,570 +2,386 @@ package test
 
 import (
 	"fmt"
-	"strings"
-
 	"github.com/dop251/goja"
 )
 
-// Bridge provides the JavaScript interface for the test module
+// VMInterface represents the methods we need from the VM 
+// to avoid importing the runtime package and creating cycles
+type VMInterface interface {
+	SetGlobal(name string, value interface{}) error
+	NewObject() JSObject // Add method to create JS objects
+	CallFunction(fn interface{}, args ...interface{}) (interface{}, error) // Add method to call JS functions
+	RunScript(name string, source string) (interface{}, error) // Add method to run JS code
+	GetRuntime() *goja.Runtime // Add method to get the underlying Goja runtime
+	CallJSFunction(fn interface{}) error // Add method to call a JS function and return any error
+}
+
+// JSObject represents a JavaScript object interface
+type JSObject interface {
+	Set(key string, value interface{}) error
+	SetMethod(name string, fn func(args ...interface{}) interface{}) error
+}
+
+// Bridge provides a basic test module implementation that works through VM abstraction
 type Bridge struct {
+	vm     VMInterface
 	runner *TestRunner
-	vm     *goja.Runtime
 }
 
 // NewBridge creates a new test bridge
-func NewBridge(vm *goja.Runtime) *Bridge {
+func NewBridge(vm VMInterface) *Bridge {
 	return &Bridge{
-		runner: NewTestRunner(),
 		vm:     vm,
+		runner: NewTestRunner(),
+	}
+}
+
+// wrapJSFunction wraps a JavaScript function to return a Go error
+func (b *Bridge) wrapJSFunction(fn interface{}) func() error {
+	return func() (err error) {
+		defer func() {
+			if r := recover(); r != nil {
+				// Convert panic to error and set as return value
+				if goErr, ok := r.(error); ok {
+					err = goErr
+				} else {
+					err = fmt.Errorf("test panic: %v", r)
+				}
+			}
+		}()
+		
+		// Get underlying Goja runtime for direct function calling
+		runtime := b.vm.GetRuntime()
+		if runtime == nil {
+			return fmt.Errorf("cannot access JavaScript runtime")
+		}
+		
+		// Handle Goja function type specifically
+		if jsFunc, ok := fn.(func(goja.FunctionCall) goja.Value); ok {
+			// Create proper function call context
+			call := goja.FunctionCall{
+				This: runtime.GlobalObject(),
+				Arguments: []goja.Value{},
+			}
+			
+			// Execute JavaScript function
+			result := jsFunc(call)
+			_ = result // Ignore return value for void test functions
+			
+			// If we reach here without panic, test passed
+			return nil
+		}
+		
+		return fmt.Errorf("cannot execute function (type: %T)", fn)
 	}
 }
 
 // RegisterGlobals registers test functions as global variables in the JS runtime
 func (b *Bridge) RegisterGlobals() error {
-	// Register test functions
-	err := b.vm.Set("describe", b.describe)
-	if err != nil {
-		return fmt.Errorf("failed to register describe: %v", err)
+	// Register describe function
+	b.vm.SetGlobal("describe", func(name string, fn func()) {
+		b.runner.Describe(name, fn)
+	})
+	
+	// Register test function (and its alias 'it')
+	testFn := func(name string, fn interface{}, options ...interface{}) {
+		var opts *TestOptions
+		if len(options) > 0 {
+			// Check if options is a map with timeout
+			if optMap, ok := options[0].(map[string]interface{}); ok {
+				if timeout, ok := optMap["timeout"].(float64); ok {
+					opts = &TestOptions{Timeout: int(timeout)}
+				}
+			}
+		}
+		
+		b.runner.Test(name, b.wrapJSFunction(fn), opts)
 	}
-
-	err = b.vm.Set("test", b.createTestFunction())
-	if err != nil {
-		return fmt.Errorf("failed to register test: %v", err)
+	b.vm.SetGlobal("__test", testFn)
+	b.vm.SetGlobal("it", testFn)
+	
+	// Register test.skip function
+	b.vm.SetGlobal("__testSkip", func(name string, fn interface{}) {
+		b.runner.Test(name, b.wrapJSFunction(fn), &TestOptions{Skip: true})
+	})
+	
+	// Register test.only function  
+	b.vm.SetGlobal("__testOnly", func(name string, fn interface{}) {
+		b.runner.Test(name, b.wrapJSFunction(fn), &TestOptions{Only: true})
+	})
+	
+	// Create JavaScript wrapper to make test both a function and have properties
+	testWrapper := `
+		const test = function(name, fn, options) {
+			return __test(name, fn, options);
+		};
+		test.skip = __testSkip;
+		test.only = __testOnly;
+		globalThis.test = test;
+	`
+	
+	// Execute the wrapper script
+	if _, err := b.vm.RunScript("test-wrapper", testWrapper); err != nil {
+		return fmt.Errorf("failed to create test wrapper: %w", err)
 	}
-
-	err = b.vm.Set("it", b.createTestFunction()) // alias for test
-	if err != nil {
-		return fmt.Errorf("failed to register it: %v", err)
+	
+	// Register simple error throwing function for JavaScript-based expectations
+	b.vm.SetGlobal("__throwTestError", func(message string) {
+		panic(fmt.Errorf(message))
+	})
+	
+	// Setup expect function in JavaScript
+	if err := b.setupExpectInJS(); err != nil {
+		return fmt.Errorf("failed to setup expect function: %w", err)
 	}
-
-	err = b.vm.Set("expect", b.expect)
-	if err != nil {
-		return fmt.Errorf("failed to register expect: %v", err)
-	}
-
-	err = b.vm.Set("beforeEach", b.beforeEach)
-	if err != nil {
-		return fmt.Errorf("failed to register beforeEach: %v", err)
-	}
-
-	err = b.vm.Set("afterEach", b.afterEach)
-	if err != nil {
-		return fmt.Errorf("failed to register afterEach: %v", err)
-	}
-
-	err = b.vm.Set("beforeAll", b.beforeAll)
-	if err != nil {
-		return fmt.Errorf("failed to register beforeAll: %v", err)
-	}
-
-	err = b.vm.Set("afterAll", b.afterAll)
-	if err != nil {
-		return fmt.Errorf("failed to register afterAll: %v", err)
-	}
-
+	
+	// Register hook functions
+	b.vm.SetGlobal("beforeEach", func(fn interface{}) {
+		b.runner.BeforeEach(b.wrapJSFunction(fn))
+	})
+	
+	b.vm.SetGlobal("afterEach", func(fn interface{}) {
+		b.runner.AfterEach(b.wrapJSFunction(fn))
+	})
+	
+	b.vm.SetGlobal("beforeAll", func(fn interface{}) {
+		b.runner.BeforeAll(b.wrapJSFunction(fn))
+	})
+	
+	b.vm.SetGlobal("afterAll", func(fn interface{}) {
+		b.runner.AfterAll(b.wrapJSFunction(fn))
+	})
+	
 	return nil
 }
 
-// describe creates a test suite
-func (b *Bridge) describe(call goja.FunctionCall) goja.Value {
-	if len(call.Arguments) < 2 {
-		panic(b.vm.NewTypeError("describe requires name and function arguments"))
-	}
-
-	name := call.Arguments[0].String()
+// setupExpectInJS creates the expect function entirely in JavaScript
+func (b *Bridge) setupExpectInJS() error {
+	expectJS := `
+		function expect(actual) {
+			return {
+				toBe: function(expected) {
+					if (actual !== expected) {
+						__throwTestError('expected ' + JSON.stringify(actual) + ' to be ' + JSON.stringify(expected));
+					}
+					return this;
+				},
+				toEqual: function(expected) {
+					if (JSON.stringify(actual) !== JSON.stringify(expected)) {
+						__throwTestError('expected ' + JSON.stringify(actual) + ' to equal ' + JSON.stringify(expected));
+					}
+					return this;
+				},
+				toBeTruthy: function() {
+					if (!actual) {
+						__throwTestError('expected ' + JSON.stringify(actual) + ' to be truthy');
+					}
+					return this;
+				},
+				toBeFalsy: function() {
+					if (actual) {
+						__throwTestError('expected ' + JSON.stringify(actual) + ' to be falsy');
+					}
+					return this;
+				},
+				toBeNull: function() {
+					if (actual !== null) {
+						__throwTestError('expected ' + JSON.stringify(actual) + ' to be null');
+					}
+					return this;
+				},
+				toThrow: function(expectedError) {
+					try {
+						if (typeof actual === 'function') {
+							actual();
+						}
+						__throwTestError('expected function to throw');
+					} catch (error) {
+						if (expectedError && !error.message.includes(expectedError)) {
+							__throwTestError('expected function to throw "' + expectedError + '" but got "' + error.message + '"');
+						}
+					}
+					return this;
+				},
+				toHaveLength: function(expectedLength) {
+					if (actual.length !== expectedLength) {
+						__throwTestError('expected ' + JSON.stringify(actual) + ' to have length ' + expectedLength + ' but got ' + actual.length);
+					}
+					return this;
+				},
+				toContain: function(expectedItem) {
+					var found = false;
+					if (typeof actual === 'string') {
+						found = actual.includes(expectedItem);
+					} else if (Array.isArray(actual)) {
+						found = actual.includes(expectedItem);
+					} else {
+						__throwTestError('toContain() requires array or string, got ' + typeof actual);
+						return this;
+					}
+					if (!found) {
+						__throwTestError('expected ' + JSON.stringify(actual) + ' to contain ' + JSON.stringify(expectedItem));
+					}
+					return this;
+				},
+				toBeLessThan: function(expected) {
+					if (!(actual < expected)) {
+						__throwTestError('expected ' + actual + ' to be less than ' + expected);
+					}
+					return this;
+				},
+				toBeGreaterThan: function(expected) {
+					if (!(actual > expected)) {
+						__throwTestError('expected ' + actual + ' to be greater than ' + expected);
+					}
+					return this;
+				},
+				toBeLessThanOrEqual: function(expected) {
+					if (!(actual <= expected)) {
+						__throwTestError('expected ' + actual + ' to be less than or equal to ' + expected);
+					}
+					return this;
+				},
+				toBeGreaterThanOrEqual: function(expected) {
+					if (!(actual >= expected)) {
+						__throwTestError('expected ' + actual + ' to be greater than or equal to ' + expected);
+					}
+					return this;
+				},
+				toBeCloseTo: function(expected, precision) {
+					precision = precision !== undefined ? precision : 2;
+					var pass = Math.abs(expected - actual) < Math.pow(10, -precision) / 2;
+					if (!pass) {
+						__throwTestError('expected ' + actual + ' to be close to ' + expected + ' (precision: ' + precision + ')');
+					}
+					return this;
+				},
+				toMatch: function(regexp) {
+					var regex = typeof regexp === 'string' ? new RegExp(regexp) : regexp;
+					if (!regex.test(actual)) {
+						__throwTestError('expected ' + JSON.stringify(actual) + ' to match ' + regex);
+					}
+					return this;
+				},
+				toBeUndefined: function() {
+					if (actual !== undefined) {
+						__throwTestError('expected ' + JSON.stringify(actual) + ' to be undefined');
+					}
+					return this;
+				},
+				toBeDefined: function() {
+					if (actual === undefined) {
+						__throwTestError('expected value to be defined but received undefined');
+					}
+					return this;
+				},
+				toBeNaN: function() {
+					if (!Number.isNaN(actual)) {
+						__throwTestError('expected ' + actual + ' to be NaN');
+					}
+					return this;
+				},
+				toBeInstanceOf: function(expectedConstructor) {
+					if (!(actual instanceof expectedConstructor)) {
+						var actualType = actual && actual.constructor ? actual.constructor.name : typeof actual;
+						var expectedType = expectedConstructor.name || 'Unknown';
+						__throwTestError('expected ' + JSON.stringify(actual) + ' to be an instance of ' + expectedType + ' but got ' + actualType);
+					}
+					return this;
+				},
+				not: {
+					toBe: function(expected) {
+						if (actual === expected) {
+							__throwTestError('expected ' + JSON.stringify(actual) + ' not to be ' + JSON.stringify(expected));
+						}
+					},
+					toEqual: function(expected) {
+						if (JSON.stringify(actual) === JSON.stringify(expected)) {
+							__throwTestError('expected ' + JSON.stringify(actual) + ' not to equal ' + JSON.stringify(expected));
+						}
+					},
+					toBeTruthy: function() {
+						if (actual) {
+							__throwTestError('expected ' + JSON.stringify(actual) + ' not to be truthy');
+						}
+					},
+					toBeFalsy: function() {
+						if (!actual) {
+							__throwTestError('expected ' + JSON.stringify(actual) + ' not to be falsy');
+						}
+					},
+					toBeNull: function() {
+						if (actual === null) {
+							__throwTestError('expected ' + JSON.stringify(actual) + ' not to be null');
+						}
+					},
+					toThrow: function(expectedError) {
+						try {
+							if (typeof actual === 'function') {
+								actual();
+							}
+							// If no error was thrown, that's what we wanted for "not to throw"
+						} catch (error) {
+							__throwTestError('expected function not to throw but it threw: ' + error.message);
+						}
+					},
+					toContain: function(expectedItem) {
+						var found = false;
+						if (typeof actual === 'string') {
+							found = actual.includes(expectedItem);
+						} else if (Array.isArray(actual)) {
+							found = actual.includes(expectedItem);
+						} else {
+							__throwTestError('toContain() requires array or string, got ' + typeof actual);
+							return;
+						}
+						if (found) {
+							__throwTestError('expected ' + JSON.stringify(actual) + ' not to contain ' + JSON.stringify(expectedItem));
+						}
+					},
+					toBeLessThan: function(expected) {
+						if (actual < expected) {
+							__throwTestError('expected ' + actual + ' not to be less than ' + expected);
+						}
+					},
+					toBeGreaterThan: function(expected) {
+						if (actual > expected) {
+							__throwTestError('expected ' + actual + ' not to be greater than ' + expected);
+						}
+					},
+					toBeUndefined: function() {
+						if (actual === undefined) {
+							__throwTestError('expected value not to be undefined');
+						}
+					},
+					toBeDefined: function() {
+						if (actual !== undefined) {
+							__throwTestError('expected ' + JSON.stringify(actual) + ' not to be defined');
+						}
+					},
+					toBeNaN: function() {
+						if (Number.isNaN(actual)) {
+							__throwTestError('expected ' + actual + ' not to be NaN');
+						}
+					},
+					toBeInstanceOf: function(expectedConstructor) {
+						if (actual instanceof expectedConstructor) {
+							var actualType = actual && actual.constructor ? actual.constructor.name : typeof actual;
+							var expectedType = expectedConstructor.name || 'Unknown';
+							__throwTestError('expected ' + JSON.stringify(actual) + ' not to be an instance of ' + expectedType);
+						}
+					}
+				}
+			};
+		}
+		globalThis.expect = expect;
+	`
 	
-	fn, ok := goja.AssertFunction(call.Arguments[1])
-	if !ok {
-		panic(b.vm.NewTypeError("describe second argument must be a function"))
-	}
-
-	b.runner.Describe(name, func() {
-		_, err := fn(goja.Undefined())
-		if err != nil {
-			panic(err)
-		}
-	})
-
-	return goja.Undefined()
-}
-
-// test creates a test case
-func (b *Bridge) test(call goja.FunctionCall) goja.Value {
-	if len(call.Arguments) < 2 {
-		panic(b.vm.NewTypeError("test requires name and function arguments"))
-	}
-
-	name := call.Arguments[0].String()
-	
-	fn, ok := goja.AssertFunction(call.Arguments[1])
-	if !ok {
-		panic(b.vm.NewTypeError("test second argument must be a function"))
-	}
-
-	options := &TestOptions{}
-	if len(call.Arguments) > 2 && !goja.IsUndefined(call.Arguments[2]) {
-		// Use defer to catch any panics from object operations
-		defer func() {
-			if r := recover(); r != nil {
-				// If there's a panic, just continue with default options
-				options = &TestOptions{}
-			}
-		}()
-		
-		opts := call.Arguments[2].ToObject(b.vm)
-		if opts != nil {
-			if only := opts.Get("only"); !goja.IsUndefined(only) {
-				options.Only = only.ToBoolean()
-			}
-			if skip := opts.Get("skip"); !goja.IsUndefined(skip) {
-				options.Skip = skip.ToBoolean()
-			}
-			if timeout := opts.Get("timeout"); !goja.IsUndefined(timeout) {
-				options.Timeout = int(timeout.ToInteger())
-			}
-		}
-	}
-
-	// Store the JavaScript function for later execution
-	testFn := fn
-	
-	b.runner.Test(name, func() error {
-		result, err := testFn(goja.Undefined())
-		if err != nil {
-			return err
-		}
-
-		// For now, just handle synchronous tests
-		// TODO: Implement proper Promise handling later
-		_ = result
-
-		return nil
-	}, options)
-
-	return goja.Undefined()
-}
-
-// createTestFunction creates a test function with skip and only properties
-func (b *Bridge) createTestFunction() goja.Value {
-	testFunc := b.vm.ToValue(b.test)
-	testObj := testFunc.ToObject(b.vm)
-	
-	// Add skip method
-	testObj.Set("skip", func(call goja.FunctionCall) goja.Value {
-		if len(call.Arguments) < 2 {
-			panic(b.vm.NewTypeError("test.skip requires name and function arguments"))
-		}
-		
-		name := call.Arguments[0].String()
-		fn, ok := goja.AssertFunction(call.Arguments[1])
-		if !ok {
-			panic(b.vm.NewTypeError("test.skip second argument must be a function"))
-		}
-		
-		// Create test with skip option
-		options := &TestOptions{Skip: true}
-		
-		testFn := fn
-		b.runner.Test(name, func() error {
-			result, err := testFn(goja.Undefined())
-			if err != nil {
-				return err
-			}
-			_ = result
-			return nil
-		}, options)
-		
-		return goja.Undefined()
-	})
-	
-	// Add only method
-	testObj.Set("only", func(call goja.FunctionCall) goja.Value {
-		if len(call.Arguments) < 2 {
-			panic(b.vm.NewTypeError("test.only requires name and function arguments"))
-		}
-		
-		name := call.Arguments[0].String()
-		fn, ok := goja.AssertFunction(call.Arguments[1])
-		if !ok {
-			panic(b.vm.NewTypeError("test.only second argument must be a function"))
-		}
-		
-		// Create test with only option
-		options := &TestOptions{Only: true}
-		
-		testFn := fn
-		b.runner.Test(name, func() error {
-			result, err := testFn(goja.Undefined())
-			if err != nil {
-				return err
-			}
-			_ = result
-			return nil
-		}, options)
-		
-		return goja.Undefined()
-	})
-	
-	return testFunc
-}
-
-// expect creates an expectation
-func (b *Bridge) expect(call goja.FunctionCall) goja.Value {
-	if len(call.Arguments) < 1 {
-		panic(b.vm.NewTypeError("expect requires an argument"))
-	}
-
-	actualValue := call.Arguments[0]
-	actual := actualValue.Export()
-	expectation := NewExpectation(actual)
-
-	// Create JavaScript expectation object
-	obj := b.vm.NewObject()
-
-	// Set up matcher methods
-	b.setMatcher(obj, "toBe", func(args ...interface{}) error {
-		if len(args) == 0 {
-			return fmt.Errorf("toBe requires an argument")
-		}
-		return expectation.ToBe(args[0])
-	})
-	b.setMatcher(obj, "toEqual", func(args ...interface{}) error {
-		if len(args) == 0 {
-			return fmt.Errorf("toEqual requires an argument")
-		}
-		return expectation.ToEqual(args[0])
-	})
-	b.setMatcher(obj, "toBeNull", func(...interface{}) error { return expectation.ToBeNull() })
-	b.setMatcher(obj, "toBeUndefined", func(...interface{}) error { 
-		return NewExpectation(actual).ToBe(nil) 
-	})
-	b.setMatcher(obj, "toBeDefined", func(...interface{}) error { 
-		return NewExpectation(actual).Not().ToBe(nil) 
-	})
-	b.setMatcher(obj, "toBeTruthy", func(...interface{}) error { return expectation.ToBeTruthy() })
-	b.setMatcher(obj, "toBeFalsy", func(...interface{}) error { return expectation.ToBeFalsy() })
-	b.setMatcher(obj, "toThrow", func(args ...interface{}) error {
-		return b.handleToThrow(actualValue, args...)
-	})
-
-	// Numeric matchers
-	b.setMatcher(obj, "toBeGreaterThan", func(args ...interface{}) error {
-		if len(args) == 0 {
-			return fmt.Errorf("toBeGreaterThan requires an argument")
-		}
-		return b.compareNumbers(actual, args[0], func(a, b float64) bool { return a > b }, "greater than")
-	})
-
-	b.setMatcher(obj, "toBeGreaterThanOrEqual", func(args ...interface{}) error {
-		if len(args) == 0 {
-			return fmt.Errorf("toBeGreaterThanOrEqual requires an argument")
-		}
-		return b.compareNumbers(actual, args[0], func(a, b float64) bool { return a >= b }, "greater than or equal to")
-	})
-
-	b.setMatcher(obj, "toBeLessThan", func(args ...interface{}) error {
-		if len(args) == 0 {
-			return fmt.Errorf("toBeLessThan requires an argument")
-		}
-		return b.compareNumbers(actual, args[0], func(a, b float64) bool { return a < b }, "less than")
-	})
-
-	b.setMatcher(obj, "toBeLessThanOrEqual", func(args ...interface{}) error {
-		if len(args) == 0 {
-			return fmt.Errorf("toBeLessThanOrEqual requires an argument")
-		}
-		return b.compareNumbers(actual, args[0], func(a, b float64) bool { return a <= b }, "less than or equal to")
-	})
-
-	// String/array matchers
-	b.setMatcher(obj, "toContain", func(args ...interface{}) error {
-		if len(args) == 0 {
-			return fmt.Errorf("toContain requires an argument")
-		}
-		return b.checkContains(actual, args[0])
-	})
-
-	b.setMatcher(obj, "toHaveLength", func(args ...interface{}) error {
-		if len(args) == 0 {
-			return fmt.Errorf("toHaveLength requires an argument")
-		}
-		return b.checkLength(actual, args[0])
-	})
-
-	// Set up 'not' property
-	notObj := b.vm.NewObject()
-	notExpectation := expectation.Not()
-
-	b.setMatcher(notObj, "toBe", func(args ...interface{}) error {
-		if len(args) == 0 {
-			return fmt.Errorf("toBe requires an argument")
-		}
-		return notExpectation.ToBe(args[0])
-	})
-	b.setMatcher(notObj, "toEqual", func(args ...interface{}) error {
-		if len(args) == 0 {
-			return fmt.Errorf("toEqual requires an argument")
-		}
-		return notExpectation.ToEqual(args[0])
-	})
-	b.setMatcher(notObj, "toBeNull", func(...interface{}) error { return notExpectation.ToBeNull() })
-	b.setMatcher(notObj, "toBeUndefined", func(...interface{}) error { 
-		return NewExpectation(notExpectation.actual).Not().ToBe(nil) 
-	})
-	b.setMatcher(notObj, "toBeDefined", func(...interface{}) error { 
-		return NewExpectation(notExpectation.actual).ToBe(nil) 
-	})
-	b.setMatcher(notObj, "toBeTruthy", func(...interface{}) error { return notExpectation.ToBeTruthy() })
-	b.setMatcher(notObj, "toBeFalsy", func(...interface{}) error { return notExpectation.ToBeFalsy() })
-	b.setMatcher(notObj, "toThrow", func(args ...interface{}) error {
-		err := b.handleToThrow(actualValue, args...)
-		if err == nil {
-			return fmt.Errorf("expected function not to throw")
-		}
-		return nil // Invert the result for "not"
-	})
-	b.setMatcher(notObj, "toContain", func(args ...interface{}) error {
-		if len(args) == 0 {
-			return fmt.Errorf("toContain requires an argument")
-		}
-		err := b.checkContains(notExpectation.actual, args[0])
-		if err == nil {
-			return fmt.Errorf("expected not to contain %v", args[0])
-		}
-		return nil // Invert the result for "not"
-	})
-
-	obj.Set("not", notObj)
-
-	return obj
-}
-
-// Helper method to set up matcher functions
-func (b *Bridge) setMatcher(obj *goja.Object, name string, matcher func(...interface{}) error) {
-	obj.Set(name, func(call goja.FunctionCall) goja.Value {
-		args := make([]interface{}, len(call.Arguments))
-		for i, arg := range call.Arguments {
-			args[i] = arg.Export()
-		}
-
-		err := matcher(args...)
-		if err != nil {
-			panic(b.vm.NewGoError(err))
-		}
-
-		return goja.Undefined()
-	})
-}
-
-// Helper for numeric comparisons
-func (b *Bridge) compareNumbers(actual, expected interface{}, compare func(a, b float64) bool, operation string) error {
-	actualNum, ok1 := toFloat64(actual)
-	expectedNum, ok2 := toFloat64(expected)
-
-	if !ok1 || !ok2 {
-		return fmt.Errorf("both values must be numbers for %s comparison", operation)
-	}
-
-	if !compare(actualNum, expectedNum) {
-		return fmt.Errorf("expected %v to be %s %v", actual, operation, expected)
-	}
-
-	return nil
-}
-
-// Helper for contains checks
-func (b *Bridge) checkContains(actual, expected interface{}) error {
-	switch act := actual.(type) {
-	case string:
-		exp, ok := expected.(string)
-		if !ok {
-			return fmt.Errorf("when checking string contains, expected must be a string")
-		}
-		if !strings.Contains(fmt.Sprintf("%s", act), exp) {
-			return fmt.Errorf("expected '%s' to contain '%s'", act, exp)
-		}
-	case []interface{}:
-		for _, item := range act {
-			if deepEqual(item, expected) {
-				return nil
-			}
-		}
-		return fmt.Errorf("expected array %v to contain %v", actual, expected)
-	default:
-		return fmt.Errorf("toContain can only be used with strings or arrays")
-	}
-
-	return nil
-}
-
-// Helper for length checks
-func (b *Bridge) checkLength(actual, expected interface{}) error {
-	expectedLen, ok := toInt(expected)
-	if !ok {
-		return fmt.Errorf("expected length must be a number")
-	}
-
-	var actualLen int
-	switch act := actual.(type) {
-	case string:
-		actualLen = len(act)
-	case []interface{}:
-		actualLen = len(act)
-	case map[string]interface{}:
-		actualLen = len(act)
-	default:
-		return fmt.Errorf("toHaveLength can only be used with strings, arrays, or objects")
-	}
-
-	if actualLen != expectedLen {
-		return fmt.Errorf("expected length %d, got %d", expectedLen, actualLen)
-	}
-
-	return nil
-}
-
-// beforeEach registers a before each hook
-func (b *Bridge) beforeEach(call goja.FunctionCall) goja.Value {
-	if len(call.Arguments) < 1 {
-		panic(b.vm.NewTypeError("beforeEach requires a function argument"))
-	}
-
-	fn, ok := goja.AssertFunction(call.Arguments[0])
-	if !ok {
-		panic(b.vm.NewTypeError("beforeEach argument must be a function"))
-	}
-
-	b.runner.BeforeEach(func() error {
-		_, err := fn(goja.Undefined())
-		return err
-	})
-
-	return goja.Undefined()
-}
-
-// afterEach registers an after each hook
-func (b *Bridge) afterEach(call goja.FunctionCall) goja.Value {
-	if len(call.Arguments) < 1 {
-		panic(b.vm.NewTypeError("afterEach requires a function argument"))
-	}
-
-	fn, ok := goja.AssertFunction(call.Arguments[0])
-	if !ok {
-		panic(b.vm.NewTypeError("afterEach argument must be a function"))
-	}
-
-	b.runner.AfterEach(func() error {
-		_, err := fn(goja.Undefined())
-		return err
-	})
-
-	return goja.Undefined()
-}
-
-// beforeAll registers a before all hook
-func (b *Bridge) beforeAll(call goja.FunctionCall) goja.Value {
-	if len(call.Arguments) < 1 {
-		panic(b.vm.NewTypeError("beforeAll requires a function argument"))
-	}
-
-	fn, ok := goja.AssertFunction(call.Arguments[0])
-	if !ok {
-		panic(b.vm.NewTypeError("beforeAll argument must be a function"))
-	}
-
-	b.runner.BeforeAll(func() error {
-		_, err := fn(goja.Undefined())
-		return err
-	})
-
-	return goja.Undefined()
-}
-
-// afterAll registers an after all hook
-func (b *Bridge) afterAll(call goja.FunctionCall) goja.Value {
-	if len(call.Arguments) < 1 {
-		panic(b.vm.NewTypeError("afterAll requires a function argument"))
-	}
-
-	fn, ok := goja.AssertFunction(call.Arguments[0])
-	if !ok {
-		panic(b.vm.NewTypeError("afterAll argument must be a function"))
-	}
-
-	b.runner.AfterAll(func() error {
-		_, err := fn(goja.Undefined())
-		return err
-	})
-
-	return goja.Undefined()
+	_, err := b.vm.RunScript("expect-setup", expectJS)
+	return err
 }
 
 // RunTests executes all registered tests
 func (b *Bridge) RunTests() ([]SuiteResult, error) {
 	return b.runner.Run()
-}
-
-// handleToThrow handles the toThrow matcher for JavaScript functions
-func (b *Bridge) handleToThrow(actualValue goja.Value, expectedError ...interface{}) error {
-	// Check if actual is a Goja function
-	if fn, ok := goja.AssertFunction(actualValue); ok {
-		// Call the function and check if it throws
-		_, err := fn(goja.Undefined())
-		didThrow := err != nil
-		
-		if !didThrow {
-			return fmt.Errorf("expected function to throw an error, but it didn't")
-		}
-		
-		// Check specific error if provided
-		if len(expectedError) > 0 {
-			expected := expectedError[0]
-			if expectedStr, ok := expected.(string); ok {
-				if !strings.Contains(err.Error(), expectedStr) {
-					return fmt.Errorf("expected error to contain '%s', got: %v", expectedStr, err)
-				}
-			}
-		}
-		
-		return nil
-	}
-	
-	// Not a function
-	return fmt.Errorf("toThrow can only be used with functions")
-}
-
-// Helper functions
-func toFloat64(value interface{}) (float64, bool) {
-	switch v := value.(type) {
-	case int:
-		return float64(v), true
-	case int32:
-		return float64(v), true
-	case int64:
-		return float64(v), true
-	case float32:
-		return float64(v), true
-	case float64:
-		return v, true
-	default:
-		return 0, false
-	}
-}
-
-func toInt(value interface{}) (int, bool) {
-	switch v := value.(type) {
-	case int:
-		return v, true
-	case int32:
-		return int(v), true
-	case int64:
-		return int(v), true
-	case float32:
-		return int(v), true
-	case float64:
-		return int(v), true
-	default:
-		return 0, false
-	}
 }

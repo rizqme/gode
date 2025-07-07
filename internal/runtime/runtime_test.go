@@ -1,15 +1,14 @@
-package runtime_test
+package runtime
 
 import (
 	"os"
 	"path/filepath"
 	"testing"
-	"github.com/rizqme/gode/internal/runtime"
 	"github.com/rizqme/gode/pkg/config"
 )
 
 func TestRuntimeCreation(t *testing.T) {
-	rt := runtime.New()
+	rt := New()
 	if rt == nil {
 		t.Error("New() returned nil")
 	}
@@ -18,7 +17,7 @@ func TestRuntimeCreation(t *testing.T) {
 }
 
 func TestRuntimeConfiguration(t *testing.T) {
-	rt := runtime.New()
+	rt := New()
 	defer rt.Dispose()
 
 	// Test configuration with default config
@@ -39,7 +38,7 @@ func TestRuntimeConfiguration(t *testing.T) {
 	}
 
 	// Test configuration with nil config
-	runtime2 := runtime.New()
+	runtime2 := New()
 	defer runtime2.Dispose()
 	
 	err = runtime2.Configure(nil)
@@ -68,7 +67,7 @@ result;
 	}
 
 	// Test runtime execution
-	rt := runtime.New()
+	rt := New()
 	defer rt.Dispose()
 
 	cfg := &config.PackageJSON{
@@ -88,7 +87,7 @@ result;
 }
 
 func TestRuntimeNonexistentFile(t *testing.T) {
-	rt := runtime.New()
+	rt := New()
 	defer rt.Dispose()
 
 	cfg := &config.PackageJSON{
@@ -118,7 +117,7 @@ func TestRuntimeRelativePath(t *testing.T) {
 	}
 	defer os.Remove(testFile)
 
-	rt := runtime.New()
+	rt := New()
 	defer rt.Dispose()
 
 	cfg := &config.PackageJSON{
@@ -156,7 +155,7 @@ console.log("Version:", core.version);
 		t.Fatalf("Failed to write test file: %v", err)
 	}
 
-	rt := runtime.New()
+	rt := New()
 	defer rt.Dispose()
 
 	cfg := &config.PackageJSON{
@@ -192,7 +191,7 @@ throw new Error("Test error");
 		t.Fatalf("Failed to write test file: %v", err)
 	}
 
-	rt := runtime.New()
+	rt := New()
 	defer rt.Dispose()
 
 	cfg := &config.PackageJSON{
@@ -212,7 +211,7 @@ throw new Error("Test error");
 }
 
 func TestRuntimeUnconfigured(t *testing.T) {
-	rt := runtime.New()
+	rt := New()
 	defer rt.Dispose()
 
 	// Test running without configuration
@@ -223,7 +222,7 @@ func TestRuntimeUnconfigured(t *testing.T) {
 }
 
 func TestRuntimeMultipleConfigurations(t *testing.T) {
-	rt := runtime.New()
+	rt := New()
 	defer rt.Dispose()
 
 	// First configuration
@@ -269,7 +268,7 @@ console.log("Object:", {key: "value"});
 		t.Fatalf("Failed to write test file: %v", err)
 	}
 
-	rt := runtime.New()
+	rt := New()
 	defer rt.Dispose()
 
 	cfg := &config.PackageJSON{
@@ -308,7 +307,7 @@ console.log("Stringified:", str);
 		t.Fatalf("Failed to write test file: %v", err)
 	}
 
-	rt := runtime.New()
+	rt := New()
 	defer rt.Dispose()
 
 	cfg := &config.PackageJSON{
@@ -328,7 +327,7 @@ console.log("Stringified:", str);
 }
 
 func TestRuntimeModuleImports(t *testing.T) {
-	rt := runtime.New()
+	rt := New()
 	defer rt.Dispose()
 
 	// Test with import mapping configuration
@@ -354,7 +353,7 @@ func TestRuntimeModuleImports(t *testing.T) {
 }
 
 func TestRuntimeDisposal(t *testing.T) {
-	rt := runtime.New()
+	rt := New()
 	
 	cfg := &config.PackageJSON{
 		Name:    "test",
@@ -376,7 +375,7 @@ func TestRuntimeDisposal(t *testing.T) {
 
 func BenchmarkRuntimeCreation(b *testing.B) {
 	for i := 0; i < b.N; i++ {
-		rt := runtime.New()
+		rt := New()
 		rt.Dispose()
 	}
 }
@@ -390,7 +389,7 @@ func BenchmarkRuntimeConfiguration(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		rt := runtime.New()
+		rt := New()
 		rt.Configure(cfg)
 		rt.Dispose()
 	}
@@ -417,7 +416,7 @@ sum;
 		b.Fatalf("Failed to write test file: %v", err)
 	}
 
-	rt := runtime.New()
+	rt := New()
 	defer rt.Dispose()
 
 	cfg := &config.PackageJSON{

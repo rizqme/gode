@@ -33,7 +33,6 @@ func Reverse(s string) string {
 
 // Plugin interface implementation
 func Initialize(runtime interface{}) error { 
-	fmt.Println("Hello plugin initialized")
 	return nil 
 }
 
@@ -47,7 +46,6 @@ func Exports() map[string]interface{} {
 }
 
 func Dispose() error { 
-	fmt.Println("Hello plugin disposed")
 	return nil 
 }
 

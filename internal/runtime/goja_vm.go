@@ -1,9 +1,11 @@
 package runtime
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"sync"
+	"time"
 
 	"github.com/dop251/goja"
 )
@@ -65,13 +67,11 @@ func (vm *gojaVM) setupGlobals() error {
 	
 	// Add JSON global
 	jsonObj := vm.runtime.NewObject()
-	jsonObj.Set("stringify", func(obj interface{}) string {
-		// TODO: Implement proper JSON stringify
-		return fmt.Sprintf("%v", obj)
+	jsonObj.Set("stringify", func(obj interface{}) interface{} {
+		return vm.runtime.ToValue(vm.jsonStringify(obj))
 	})
 	jsonObj.Set("parse", func(str string) interface{} {
-		// TODO: Implement proper JSON parse
-		return nil
+		return vm.runtime.ToValue(vm.jsonParse(str))
 	})
 	vm.runtime.Set("JSON", jsonObj)
 	
@@ -83,6 +83,9 @@ func (vm *gojaVM) setupGlobals() error {
 		}
 		return module.Export()
 	})
+	
+	// Add timer functions
+	vm.setupTimers()
 	
 	return nil
 }
@@ -564,4 +567,74 @@ func (c *gojaContext) GetVM() VM {
 // GetRuntime returns the underlying Goja runtime for direct access
 func (vm *gojaVM) GetRuntime() interface{} {
 	return vm.runtime
+}
+
+// JSON implementation methods
+func (vm *gojaVM) jsonStringify(obj interface{}) string {
+	if obj == nil {
+		return "null"
+	}
+	
+	// Convert Goja values to Go values for proper JSON marshaling
+	if gojaVal, ok := obj.(*goja.Object); ok {
+		goValue := gojaVal.Export()
+		jsonBytes, err := json.Marshal(goValue)
+		if err != nil {
+			return "null"
+		}
+		return string(jsonBytes)
+	}
+	
+	// Handle direct Go values
+	jsonBytes, err := json.Marshal(obj)
+	if err != nil {
+		return "null"
+	}
+	return string(jsonBytes)
+}
+
+func (vm *gojaVM) jsonParse(str string) interface{} {
+	var result interface{}
+	err := json.Unmarshal([]byte(str), &result)
+	if err != nil {
+		panic(vm.runtime.NewGoError(fmt.Errorf("SyntaxError: Unexpected token in JSON at position 0")))
+	}
+	return result
+}
+
+// Timer implementation
+func (vm *gojaVM) setupTimers() {
+	timers := make(map[string]*time.Timer)
+	var timerMutex sync.Mutex
+	
+	// setTimeout function
+	vm.runtime.Set("setTimeout", func(callback goja.Value, delay float64) string {
+		timerMutex.Lock()
+		defer timerMutex.Unlock()
+		
+		id := fmt.Sprintf("timer_%d", time.Now().UnixNano())
+		
+		// Create a wrapper that safely calls the JavaScript function
+		timer := time.AfterFunc(time.Duration(delay)*time.Millisecond, func() {
+			vm.vmQueue <- func() {
+				if fn, ok := goja.AssertFunction(callback); ok {
+					fn(goja.Undefined())
+				}
+			}
+		})
+		timers[id] = timer
+		
+		return id
+	})
+	
+	// clearTimeout function
+	vm.runtime.Set("clearTimeout", func(id string) {
+		timerMutex.Lock()
+		defer timerMutex.Unlock()
+		
+		if timer, exists := timers[id]; exists {
+			timer.Stop()
+			delete(timers, id)
+		}
+	})
 }

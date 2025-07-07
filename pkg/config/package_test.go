@@ -1,11 +1,10 @@
-package config_test
+package config
 
 import (
 	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
-	"github.com/rizqme/gode/pkg/config"
 )
 
 func TestFindProjectRoot(t *testing.T) {
@@ -38,14 +37,14 @@ func TestFindProjectRoot(t *testing.T) {
 	}
 
 	// Test finding project root from nested file
-	root := config.FindProjectRoot(testFile)
+	root := FindProjectRoot(testFile)
 	if root != tmpDir {
 		t.Errorf("Expected root %s, got %s", tmpDir, root)
 	}
 
 	// Test finding project root from root file
 	rootFile := filepath.Join(tmpDir, "index.js")
-	root = config.FindProjectRoot(rootFile)
+	root = FindProjectRoot(rootFile)
 	if root != tmpDir {
 		t.Errorf("Expected root %s, got %s", tmpDir, root)
 	}
@@ -66,7 +65,7 @@ func TestFindProjectRootNoPackageJSON(t *testing.T) {
 	}
 
 	// Should return the directory containing the file
-	root := config.FindProjectRoot(testFile)
+	root := FindProjectRoot(testFile)
 	if root != tmpDir {
 		t.Errorf("Expected root %s, got %s", tmpDir, root)
 	}
@@ -118,7 +117,7 @@ func TestLoadPackageJSONExists(t *testing.T) {
 	}
 
 	// Load package.json
-	pkg, err := config.LoadPackageJSON(tmpDir)
+	pkg, err := LoadPackageJSON(tmpDir)
 	if err != nil {
 		t.Fatalf("LoadPackageJSON() failed: %v", err)
 	}
@@ -172,7 +171,7 @@ func TestLoadPackageJSONNotExists(t *testing.T) {
 	defer os.RemoveAll(tmpDir)
 
 	// Load package.json (should return default)
-	pkg, err := config.LoadPackageJSON(tmpDir)
+	pkg, err := LoadPackageJSON(tmpDir)
 	if err != nil {
 		t.Fatalf("LoadPackageJSON() failed: %v", err)
 	}
@@ -215,7 +214,7 @@ func TestLoadPackageJSONInvalidJSON(t *testing.T) {
 	}
 
 	// Should fail to load
-	_, err = config.LoadPackageJSON(tmpDir)
+	_, err = LoadPackageJSON(tmpDir)
 	if err == nil {
 		t.Error("Should fail to load invalid JSON")
 	}
@@ -233,7 +232,7 @@ func TestSavePackageJSON(t *testing.T) {
 	defer os.RemoveAll(tmpDir)
 
 	// Create package.json config
-	pkg := &config.PackageJSON{
+	pkg := &PackageJSON{
 		Name:        "test-save",
 		Version:     "1.0.0",
 		Description: "Test package",
@@ -244,7 +243,7 @@ func TestSavePackageJSON(t *testing.T) {
 		Dependencies: map[string]string{
 			"lodash": "^4.17.21",
 		},
-		Gode: config.GodeConfig{
+		Gode: GodeConfig{
 			Imports: map[string]string{
 				"@app": "./src",
 			},
@@ -270,7 +269,7 @@ func TestSavePackageJSON(t *testing.T) {
 		t.Fatalf("Failed to read saved package.json: %v", err)
 	}
 
-	var loaded config.PackageJSON
+	var loaded PackageJSON
 	err = json.Unmarshal(data, &loaded)
 	if err != nil {
 		t.Fatalf("Failed to parse saved package.json: %v", err)
@@ -289,7 +288,7 @@ func TestSavePackageJSON(t *testing.T) {
 }
 
 func TestSavePackageJSONNoProjectRoot(t *testing.T) {
-	pkg := &config.PackageJSON{
+	pkg := &PackageJSON{
 		Name:    "test",
 		Version: "1.0.0",
 		// ProjectRoot not set
@@ -335,7 +334,7 @@ func TestPermissionConfig(t *testing.T) {
 	}
 
 	// Load package.json
-	pkg, err := config.LoadPackageJSON(tmpDir)
+	pkg, err := LoadPackageJSON(tmpDir)
 	if err != nil {
 		t.Fatalf("LoadPackageJSON() failed: %v", err)
 	}
@@ -393,7 +392,7 @@ func TestBuildConfig(t *testing.T) {
 	}
 
 	// Load package.json
-	pkg, err := config.LoadPackageJSON(tmpDir)
+	pkg, err := LoadPackageJSON(tmpDir)
 	if err != nil {
 		t.Fatalf("LoadPackageJSON() failed: %v", err)
 	}
@@ -452,7 +451,7 @@ func BenchmarkLoadPackageJSON(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_, err := config.LoadPackageJSON(tmpDir)
+		_, err := LoadPackageJSON(tmpDir)
 		if err != nil {
 			b.Errorf("LoadPackageJSON() failed: %v", err)
 		}
@@ -486,6 +485,6 @@ func BenchmarkFindProjectRoot(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		config.FindProjectRoot(testFile)
+		FindProjectRoot(testFile)
 	}
 }

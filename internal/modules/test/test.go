@@ -300,7 +300,6 @@ func (tr *TestRunner) runSuite(suite *TestSuite) SuiteResult {
 	for _, hook := range suite.AfterAll {
 		if err := hook(); err != nil {
 			// Note: We don't fail the suite if afterAll fails
-			fmt.Printf("Warning: afterAll hook failed: %v\n", err)
 		}
 	}
 

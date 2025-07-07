@@ -1,31 +1,32 @@
 package test
 
-import (
-	"github.com/dop251/goja"
-)
+import ()
+
+// Global bridge instance to maintain state across calls
+var globalBridge *Bridge
 
 // RegisterTestModule registers the test module in the JavaScript runtime
-func RegisterTestModule(vm *goja.Runtime) error {
-	bridge := NewBridge(vm)
+func RegisterTestModule(vm VMInterface) error {
+	globalBridge = NewBridge(vm)
 	
 	// Register global test functions
-	err := bridge.RegisterGlobals()
+	err := globalBridge.RegisterGlobals()
 	if err != nil {
 		return err
 	}
 
 	// Store bridge in runtime for later access
-	vm.Set("__gode_test_bridge", bridge)
+	vm.SetGlobal("__gode_test_bridge", globalBridge)
 
 	return nil
 }
 
 // GetTestBridge retrieves the test bridge from the runtime
-func GetTestBridge(vm *goja.Runtime) *Bridge {
-	if bridge := vm.Get("__gode_test_bridge"); bridge != nil {
-		if b, ok := bridge.Export().(*Bridge); ok {
-			return b
-		}
+func GetTestBridge(vm VMInterface) *Bridge {
+	// Return the global bridge instance that was registered
+	if globalBridge == nil {
+		// If not initialized, create a new one (shouldn't happen in normal flow)
+		globalBridge = NewBridge(vm)
 	}
-	return nil
+	return globalBridge
 }

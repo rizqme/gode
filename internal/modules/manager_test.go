@@ -1,15 +1,14 @@
-package modules_test
+package modules
 
 import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"github.com/rizqme/gode/internal/modules"
 	"github.com/rizqme/gode/pkg/config"
 )
 
 func TestNewModuleManager(t *testing.T) {
-	manager := modules.NewModuleManager()
+	manager := NewModuleManager()
 	if manager == nil {
 		t.Error("NewModuleManager() returned nil")
 	}
@@ -22,7 +21,7 @@ func TestNewModuleManager(t *testing.T) {
 }
 
 func TestModuleManagerConfiguration(t *testing.T) {
-	manager := modules.NewModuleManager()
+	manager := NewModuleManager()
 	
 	cfg := &config.PackageJSON{
 		Name:    "test",
@@ -49,7 +48,7 @@ func TestModuleManagerConfiguration(t *testing.T) {
 }
 
 func TestModuleResolution(t *testing.T) {
-	manager := modules.NewModuleManager()
+	manager := NewModuleManager()
 	
 	cfg := &config.PackageJSON{
 		Name:    "test",
@@ -142,7 +141,7 @@ func TestModuleResolution(t *testing.T) {
 // Note: resolveDependency is a private method and cannot be tested directly
 
 func TestModuleLoading(t *testing.T) {
-	manager := modules.NewModuleManager()
+	manager := NewModuleManager()
 	
 	// Test built-in module loading through public Load method
 	source, err := manager.Load("gode:core")
@@ -159,7 +158,7 @@ func TestModuleLoading(t *testing.T) {
 // Note: resolveFilePath and resolveNPMDependency are private methods
 
 func TestImportMappingRecursion(t *testing.T) {
-	manager := modules.NewModuleManager()
+	manager := NewModuleManager()
 	
 	cfg := &config.PackageJSON{
 		Name:    "test",
@@ -189,7 +188,7 @@ func TestImportMappingRecursion(t *testing.T) {
 }
 
 func TestModuleManagerWithNilConfig(t *testing.T) {
-	manager := modules.NewModuleManager()
+	manager := NewModuleManager()
 	
 	// Test with nil config
 	err := manager.Configure(nil)
@@ -210,7 +209,7 @@ func TestModuleManagerWithNilConfig(t *testing.T) {
 // Note: loadFromPath is a private method and cannot be tested directly
 
 func BenchmarkModuleResolution(b *testing.B) {
-	manager := modules.NewModuleManager()
+	manager := NewModuleManager()
 	
 	cfg := &config.PackageJSON{
 		Name:    "benchmark",

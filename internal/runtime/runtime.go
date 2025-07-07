@@ -142,13 +142,9 @@ func (r *Runtime) RunTests(testFiles []string) ([]test.SuiteResult, error) {
 		return nil, fmt.Errorf("runtime not configured")
 	}
 
-	// Get the test bridge
-	runtime, ok := r.vm.GetRuntime().(*goja.Runtime)
-	if !ok {
-		return nil, fmt.Errorf("expected Goja runtime, got %T", r.vm.GetRuntime())
-	}
-
-	bridge := test.GetTestBridge(runtime)
+	// Get the test bridge using adapter
+	testAdapter := &testVMAdapter{vm: r.vm}
+	bridge := test.GetTestBridge(testAdapter)
 	if bridge == nil {
 		return nil, fmt.Errorf("test module not properly initialized")
 	}
@@ -166,17 +162,17 @@ func (r *Runtime) RunTests(testFiles []string) ([]test.SuiteResult, error) {
 
 // setupBuiltinModules registers all built-in modules
 func (r *Runtime) setupBuiltinModules() error {
+	// Create adapters to break the import cycle
+	streamAdapter := &streamVMAdapter{vm: r.vm}
+	testAdapter := &testVMAdapter{vm: r.vm}
+	
 	// Register stream module
-	runtime, ok := r.vm.GetRuntime().(*goja.Runtime)
-	if !ok {
-		return fmt.Errorf("expected Goja runtime, got %T", r.vm.GetRuntime())
-	}
-	if err := stream.RegisterModule(runtime); err != nil {
+	if err := stream.RegisterModule(streamAdapter); err != nil {
 		return fmt.Errorf("failed to register stream module: %w", err)
 	}
 	
 	// Register test module
-	if err := test.RegisterTestModule(runtime); err != nil {
+	if err := test.RegisterTestModule(testAdapter); err != nil {
 		return fmt.Errorf("failed to register test module: %w", err)
 	}
 	
@@ -195,6 +191,101 @@ func (r *Runtime) setupBuiltinModules() error {
 	r.vm.RegisterModule("gode:core", module)
 	
 	return nil
+}
+
+// Adapter types to break import cycles
+
+// streamVMAdapter adapts VM interface for stream module
+type streamVMAdapter struct {
+	vm VM
+}
+
+// streamObjectAdapter adapts Object interface for stream module
+type streamObjectAdapter struct {
+	obj Object
+}
+
+func (s *streamObjectAdapter) Set(key string, value interface{}) error {
+	return s.obj.Set(key, value)
+}
+
+func (s *streamVMAdapter) NewObject() stream.Object {
+	return &streamObjectAdapter{obj: s.vm.NewObject()}
+}
+
+func (s *streamVMAdapter) RegisterModule(name string, exports stream.Object) {
+	// Extract the underlying Object from the adapter
+	if adapter, ok := exports.(*streamObjectAdapter); ok {
+		s.vm.RegisterModule(name, adapter.obj)
+	}
+}
+
+// testVMAdapter adapts VM interface for test module
+type testVMAdapter struct {
+	vm VM
+}
+
+func (t *testVMAdapter) SetGlobal(name string, value interface{}) error {
+	return t.vm.SetGlobal(name, value)
+}
+
+func (t *testVMAdapter) NewObject() test.JSObject {
+	return &testObjectAdapter{obj: t.vm.NewObject()}
+}
+
+func (t *testVMAdapter) CallFunction(fn interface{}, args ...interface{}) (interface{}, error) {
+	// For now, we don't need this method since we're using reflection in the bridge
+	return nil, fmt.Errorf("CallFunction not implemented")
+}
+
+func (t *testVMAdapter) RunScript(name string, source string) (interface{}, error) {
+	value, err := t.vm.RunScript(name, source)
+	if err != nil {
+		return nil, err
+	}
+	return value.Export(), nil
+}
+
+func (t *testVMAdapter) GetRuntime() *goja.Runtime {
+	// We need to get the underlying Goja runtime from the VM
+	// This requires adding a method to the VM interface
+	if gojaVM, ok := t.vm.(*gojaVM); ok {
+		return gojaVM.runtime
+	}
+	return nil
+}
+
+func (t *testVMAdapter) CallJSFunction(fn interface{}) error {
+	// Handle Goja function type directly
+	if jsFunc, ok := fn.(func(goja.FunctionCall) goja.Value); ok {
+		// Get the underlying Goja runtime to create a proper FunctionCall
+		if gojaVM, ok := t.vm.(*gojaVM); ok {
+			// Create a proper FunctionCall with the runtime
+			call := goja.FunctionCall{
+				This: gojaVM.runtime.GlobalObject(),
+				Arguments: []goja.Value{},
+			}
+			result := jsFunc(call)
+			_ = result // Ignore return value
+			return nil
+		}
+		return fmt.Errorf("cannot access Goja runtime")
+	}
+	return fmt.Errorf("cannot call JavaScript function (type: %T)", fn)
+}
+
+// testObjectAdapter adapts Object interface for test module
+type testObjectAdapter struct {
+	obj Object
+}
+
+func (o *testObjectAdapter) Set(key string, value interface{}) error {
+	return o.obj.Set(key, value)
+}
+
+func (o *testObjectAdapter) SetMethod(name string, fn func(args ...interface{}) interface{}) error {
+	// Goja will handle the conversion automatically
+	return o.obj.Set(name, fn)
 }
 
 // Dispose cleans up the runtime

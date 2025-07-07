@@ -1,13 +1,12 @@
-package runtime_test
+package runtime
 
 import (
 	"testing"
-	"github.com/rizqme/gode/internal/runtime"
 )
 
 func TestVMInterface(t *testing.T) {
 	// Test VM interface compliance with Goja implementation
-	vm, err := runtime.NewVM(nil)
+	vm, err := NewVM(nil)
 	if err != nil {
 		t.Fatalf("Failed to create VM: %v", err)
 	}
@@ -24,7 +23,7 @@ func TestVMInterface(t *testing.T) {
 }
 
 func TestVMScriptExecution(t *testing.T) {
-	vm, err := runtime.NewVM(nil)
+	vm, err := NewVM(nil)
 	if err != nil {
 		t.Fatalf("Failed to create VM: %v", err)
 	}
@@ -96,7 +95,7 @@ func TestVMScriptExecution(t *testing.T) {
 }
 
 func TestVMGlobalVariables(t *testing.T) {
-	vm, err := runtime.NewVM(nil)
+	vm, err := NewVM(nil)
 	if err != nil {
 		t.Fatalf("Failed to create VM: %v", err)
 	}
@@ -125,7 +124,7 @@ func TestVMGlobalVariables(t *testing.T) {
 }
 
 func TestVMObjectCreation(t *testing.T) {
-	vm, err := runtime.NewVM(nil)
+	vm, err := NewVM(nil)
 	if err != nil {
 		t.Fatalf("Failed to create VM: %v", err)
 	}
@@ -162,7 +161,7 @@ func TestVMObjectCreation(t *testing.T) {
 }
 
 func TestVMArrayCreation(t *testing.T) {
-	vm, err := runtime.NewVM(nil)
+	vm, err := NewVM(nil)
 	if err != nil {
 		t.Fatalf("Failed to create VM: %v", err)
 	}
@@ -200,7 +199,7 @@ func TestVMArrayCreation(t *testing.T) {
 }
 
 func TestVMModuleSystem(t *testing.T) {
-	vm, err := runtime.NewVM(nil)
+	vm, err := NewVM(nil)
 	if err != nil {
 		t.Fatalf("Failed to create VM: %v", err)
 	}
@@ -228,7 +227,7 @@ func TestVMModuleSystem(t *testing.T) {
 }
 
 func TestVMNativeFunction(t *testing.T) {
-	vm, err := runtime.NewVM(nil)
+	vm, err := NewVM(nil)
 	if err != nil {
 		t.Fatalf("Failed to create VM: %v", err)
 	}
@@ -236,7 +235,7 @@ func TestVMNativeFunction(t *testing.T) {
 
 	// Test native function creation
 	called := false
-	nativeFn := func(this runtime.Value, args ...runtime.Value) (runtime.Value, error) {
+	nativeFn := func(this Value, args ...Value) (Value, error) {
 		called = true
 		if len(args) > 0 {
 			return args[0], nil
@@ -267,7 +266,7 @@ func TestVMNativeFunction(t *testing.T) {
 }
 
 func TestVMErrorHandling(t *testing.T) {
-	vm, err := runtime.NewVM(nil)
+	vm, err := NewVM(nil)
 	if err != nil {
 		t.Fatalf("Failed to create VM: %v", err)
 	}
@@ -293,7 +292,7 @@ func TestVMErrorHandling(t *testing.T) {
 }
 
 func TestVMDisposal(t *testing.T) {
-	vm, err := runtime.NewVM(nil)
+	vm, err := NewVM(nil)
 	if err != nil {
 		t.Fatalf("Failed to create VM: %v", err)
 	}
@@ -309,7 +308,7 @@ func TestVMDisposal(t *testing.T) {
 }
 
 func TestVMConcurrency(t *testing.T) {
-	vm, err := runtime.NewVM(nil)
+	vm, err := NewVM(nil)
 	if err != nil {
 		t.Fatalf("Failed to create VM: %v", err)
 	}
