@@ -1,0 +1,3 @@
+[submodule "goja"]
+	path = goja
+	url = https://github.com/rizqme/goja.git
