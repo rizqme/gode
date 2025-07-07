@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/rizqme/gode/internal/errors"
 	"github.com/rizqme/gode/internal/plugins"
 	"github.com/rizqme/gode/pkg/config"
 )
@@ -78,84 +79,88 @@ func (m *ModuleManager) Configure(cfg *config.PackageJSON) error {
 
 // Load implements the ModuleLoader interface
 func (m *ModuleManager) Load(specifier string) (string, error) {
-	// Check cache first
-	if cached, exists := m.cache[specifier]; exists {
-		return cached, nil
-	}
-	
-	// Resolve the module
-	resolved, err := m.Resolve(specifier, "")
-	if err != nil {
-		return "", err
-	}
-	
-	// Load based on resolved path
-	source, err := m.loadFromPath(resolved)
-	if err != nil {
-		return "", err
-	}
-	
-	// For plugins, register with the original specifier name for direct loading
-	if strings.HasSuffix(resolved, ".so") && source == "" {
-		if rt, ok := m.runtime.(interface{ RegisterModule(string, interface{}) }); ok {
-			// Get the plugin from the base name first
-			pluginName := filepath.Base(strings.TrimSuffix(resolved, filepath.Ext(resolved)))
-			if jsObj, exists := m.pluginRegistry.GetPlugin(pluginName); exists {
-				// Register with both the plugin name and the original specifier
-				rt.RegisterModule(pluginName, jsObj)
-				if specifier != pluginName {
-					rt.RegisterModule(specifier, jsObj)
+	return errors.SafeOperationWithResult("ModuleManager", "Load", func() (string, error) {
+		// Check cache first
+		if cached, exists := m.cache[specifier]; exists {
+			return cached, nil
+		}
+		
+		// Resolve the module
+		resolved, err := m.Resolve(specifier, "")
+		if err != nil {
+			return "", errors.NewModuleError(specifier, "", "resolve", err)
+		}
+		
+		// Load based on resolved path
+		source, err := m.loadFromPath(resolved)
+		if err != nil {
+			return "", errors.NewModuleError(specifier, resolved, "load", err)
+		}
+		
+		// For plugins, register with the original specifier name for direct loading
+		if strings.HasSuffix(resolved, ".so") && source == "" {
+			if rt, ok := m.runtime.(interface{ RegisterModule(string, interface{}) }); ok {
+				// Get the plugin from the base name first
+				pluginName := filepath.Base(strings.TrimSuffix(resolved, filepath.Ext(resolved)))
+				if jsObj, exists := m.pluginRegistry.GetPlugin(pluginName); exists {
+					// Register with both the plugin name and the original specifier
+					rt.RegisterModule(pluginName, jsObj)
+					if specifier != pluginName {
+						rt.RegisterModule(specifier, jsObj)
+					}
 				}
 			}
 		}
-	}
-	
-	// Cache the result
-	m.cache[specifier] = source
-	
-	return source, nil
+		
+		// Cache the result
+		m.cache[specifier] = source
+		
+		return source, nil
+	})
 }
 
 // Resolve implements the ModuleLoader interface
 func (m *ModuleManager) Resolve(specifier, referrer string) (string, error) {
-	// 1. Check import mappings
-	if mapped, exists := m.importMaps[specifier]; exists {
-		return m.Resolve(mapped, referrer)
-	}
-	
-	// 1b. Check import mappings with prefix matching (for @app/file.js)
-	for alias, path := range m.importMaps {
-		if strings.HasPrefix(specifier, alias+"/") {
-			// Replace the alias part with the mapped path
-			remaining := strings.TrimPrefix(specifier, alias)
-			newSpecifier := path + remaining
-			return m.Resolve(newSpecifier, referrer)
+	return errors.SafeOperationWithResult("ModuleManager", "Resolve", func() (string, error) {
+		// 1. Check import mappings
+		if mapped, exists := m.importMaps[specifier]; exists {
+			return m.Resolve(mapped, referrer)
 		}
-	}
-	
-	// 2. Check for built-in modules
-	if strings.HasPrefix(specifier, "gode:") {
-		return specifier, nil
-	}
-	
-	// 3. Check dependencies
-	if m.config != nil && m.config.Dependencies != nil {
-		if dep, exists := m.config.Dependencies[specifier]; exists {
-			return m.resolveDependency(specifier, dep)
+		
+		// 1b. Check import mappings with prefix matching (for @app/file.js)
+		for alias, path := range m.importMaps {
+			if strings.HasPrefix(specifier, alias+"/") {
+				// Replace the alias part with the mapped path
+				remaining := strings.TrimPrefix(specifier, alias)
+				newSpecifier := path + remaining
+				return m.Resolve(newSpecifier, referrer)
+			}
 		}
-	}
-	
-	// 4. Check for file paths
-	if m.isFilePath(specifier) {
-		return m.resolveFilePath(specifier, referrer)
-	}
-	
-	// 5. Check for HTTP URLs
-	if m.isHTTPURL(specifier) {
-		return specifier, nil
-	}
-	
-	return "", fmt.Errorf("cannot resolve module: %s", specifier)
+		
+		// 2. Check for built-in modules
+		if strings.HasPrefix(specifier, "gode:") {
+			return specifier, nil
+		}
+		
+		// 3. Check dependencies
+		if m.config != nil && m.config.Dependencies != nil {
+			if dep, exists := m.config.Dependencies[specifier]; exists {
+				return m.resolveDependency(specifier, dep)
+			}
+		}
+		
+		// 4. Check for file paths
+		if m.isFilePath(specifier) {
+			return m.resolveFilePath(specifier, referrer)
+		}
+		
+		// 5. Check for HTTP URLs
+		if m.isHTTPURL(specifier) {
+			return specifier, nil
+		}
+		
+		return "", errors.NewModuleError(specifier, referrer, "resolve", fmt.Errorf("cannot resolve module: %s", specifier))
+	})
 }
 
 func (m *ModuleManager) resolveDependency(name, version string) (string, error) {
@@ -203,6 +208,11 @@ func (m *ModuleManager) resolveFilePath(specifier, referrer string) (string, err
 }
 
 func (m *ModuleManager) isFilePath(specifier string) bool {
+	// First check if it's an HTTP URL - if so, it's NOT a file path
+	if m.isHTTPURL(specifier) {
+		return false
+	}
+	
 	return strings.HasPrefix(specifier, "./") ||
 		strings.HasPrefix(specifier, "../") ||
 		strings.HasPrefix(specifier, "/") ||
@@ -248,53 +258,57 @@ func (m *ModuleManager) loadHTTPModule(url string) (string, error) {
 }
 
 func (m *ModuleManager) loadGoPlugin(path string) (string, error) {
-	if m.pluginRegistry == nil {
-		return "", fmt.Errorf("plugin system not initialized (VM/Runtime required)")
-	}
-	
-	// Load the plugin
-	jsObj, err := m.pluginRegistry.LoadPlugin(path)
-	if err != nil {
-		return "", fmt.Errorf("failed to load plugin %s: %v", path, err)
-	}
-	
-	// Register as a module in the runtime
-	pluginName := filepath.Base(strings.TrimSuffix(path, filepath.Ext(path)))
-	if rt, ok := m.runtime.(interface{ RegisterModule(string, interface{}) }); ok {
-		rt.RegisterModule(pluginName, jsObj)
-	}
-	
-	// Return empty string as plugins are registered directly
-	return "", nil
+	return errors.SafeOperationWithResult("ModuleManager", "LoadGoPlugin", func() (string, error) {
+		if m.pluginRegistry == nil {
+			return "", errors.NewModuleError("plugin", path, "load", fmt.Errorf("plugin system not initialized (VM/Runtime required)"))
+		}
+		
+		// Load the plugin
+		jsObj, err := m.pluginRegistry.LoadPlugin(path)
+		if err != nil {
+			return "", errors.NewModuleError("plugin", path, "load", err).WithSourceContext(fmt.Sprintf("Plugin path: %s", path))
+		}
+		
+		// Register as a module in the runtime
+		pluginName := filepath.Base(strings.TrimSuffix(path, filepath.Ext(path)))
+		if rt, ok := m.runtime.(interface{ RegisterModule(string, interface{}) }); ok {
+			rt.RegisterModule(pluginName, jsObj)
+		}
+		
+		// Return empty string as plugins are registered directly
+		return "", nil
+	})
 }
 
 func (m *ModuleManager) loadFileModule(path string) (string, error) {
-	// Check if file exists
-	if _, err := os.Stat(path); os.IsNotExist(err) {
-		return "", fmt.Errorf("file not found: %s", path)
-	}
-	
-	// Read file contents
-	content, err := os.ReadFile(path)
-	if err != nil {
-		return "", fmt.Errorf("failed to read file %s: %w", path, err)
-	}
-	
-	// Handle different file extensions
-	ext := filepath.Ext(path)
-	switch ext {
-	case ".js":
-		// JavaScript file - return as is
-		return string(content), nil
-	case ".json":
-		// JSON file - wrap in module.exports
-		return fmt.Sprintf("module.exports = %s;", string(content)), nil
-	case ".ts":
-		// TypeScript file - for now, treat as JavaScript
-		// TODO: Implement TypeScript compilation
-		return string(content), nil
-	default:
-		// Default to JavaScript
-		return string(content), nil
-	}
+	return errors.SafeOperationWithResult("ModuleManager", "LoadFileModule", func() (string, error) {
+		// Check if file exists
+		if _, err := os.Stat(path); os.IsNotExist(err) {
+			return "", errors.NewModuleError("file", path, "load", fmt.Errorf("file not found: %s", path))
+		}
+		
+		// Read file contents
+		content, err := os.ReadFile(path)
+		if err != nil {
+			return "", errors.NewModuleError("file", path, "read", err).WithSourceContext(fmt.Sprintf("File path: %s", path))
+		}
+		
+		// Handle different file extensions
+		ext := filepath.Ext(path)
+		switch ext {
+		case ".js":
+			// JavaScript file - return as is
+			return string(content), nil
+		case ".json":
+			// JSON file - wrap in module.exports
+			return fmt.Sprintf("module.exports = %s;", string(content)), nil
+		case ".ts":
+			// TypeScript file - for now, treat as JavaScript
+			// TODO: Implement TypeScript compilation
+			return string(content), nil
+		default:
+			// Default to JavaScript
+			return string(content), nil
+		}
+	})
 }

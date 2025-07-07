@@ -11,6 +11,7 @@ Gode is a modern JavaScript/TypeScript runtime built in Go, inspired by Deno. It
 - **Package.json Based** - Familiar Node.js-style project configuration
 - **Web Standards** - Implements fetch(), WebSocket, URL, and other web APIs
 - **Thread-Safe Async** - Advanced plugin system with goroutine-based operations
+- **Enhanced Error Handling** - Comprehensive JavaScript stacktraces with Go native module formatting
 
 ## 🏗️ Architecture
 
@@ -21,6 +22,8 @@ Gode leverages:
 - **Channel-based communication** between Go and JavaScript
 - **Runtime queue system** for thread-safe operations
 - **Automatic callback wrapping** for safe async plugin execution
+- **Advanced error handling** with comprehensive JavaScript stacktraces
+- **Go native module formatting** for user-friendly error messages
 
 ## 📦 Installation
 
@@ -346,6 +349,11 @@ gode/
 - **Thread Safety**: Runtime queue system for safe async operations
 - **Async Patterns**: Support for callbacks, promises, and goroutine-based operations
 - **Module System**: Support for .so plugins, built-in modules, and file imports
+- **Error Handling**: Comprehensive JavaScript stacktrace system with:
+  - Cross-module error tracking with full call paths
+  - Enhanced file naming (moduleName:filepath format)
+  - Go native module formatting (JSON.parse instead of Go function paths)
+  - Panic prevention and recovery for all JavaScript operations
 
 ### 🚧 In Progress
 

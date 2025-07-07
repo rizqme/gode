@@ -10,6 +10,7 @@ import (
 	"sync/atomic"
 
 	"github.com/rizqme/gode/goja"
+	"github.com/rizqme/gode/internal/errors"
 	"github.com/rizqme/gode/internal/modules"
 	"github.com/rizqme/gode/internal/modules/globals"
 	"github.com/rizqme/gode/internal/modules/http"
@@ -141,8 +142,11 @@ func (r *Runtime) setupGlobals() error {
 							return module
 						}
 					}
-					// Otherwise execute the source
-					val, err := r.runtime.RunString(source)
+					// Otherwise execute the source with enhanced file name
+					// Extract module name from specifier
+					moduleName := r.extractModuleName(specifier)
+					fileName := r.getEnhancedFileName(specifier, true, moduleName)
+					val, err := r.runtime.RunScript(fileName, source)
 					if err == nil {
 						// Check if this is an ES6 module (has __gode_exports)
 						if exportsVal := r.runtime.Get("__gode_exports"); exportsVal != nil && !goja.IsUndefined(exportsVal) && !goja.IsNull(exportsVal) {
@@ -152,11 +156,24 @@ func (r *Runtime) setupGlobals() error {
 						}
 						// Otherwise return the last expression value (CommonJS style)
 						return val
+					} else {
+						// Enhanced error handling for JavaScript execution errors
+						moduleErr := r.createModuleErrorFromJS(specifier, err)
+						panic(r.runtime.NewGoError(moduleErr))
+					}
+				} else {
+					// Enhanced error handling for module loading errors
+					if moduleErr, ok := err.(*errors.ModuleError); ok {
+						panic(r.runtime.NewGoError(moduleErr))
+					} else {
+						moduleErr := errors.NewModuleError(specifier, "", "require", err)
+						panic(r.runtime.NewGoError(moduleErr))
 					}
 				}
 			}
 			
-			panic(r.runtime.NewGoError(fmt.Errorf("module not found: %s", specifier)))
+			moduleErr := errors.NewModuleError(specifier, "", "require", fmt.Errorf("module not found: %s", specifier))
+			panic(r.runtime.NewGoError(moduleErr))
 		})
 		
 		done <- nil
@@ -267,16 +284,29 @@ func (r *Runtime) Run(entrypoint string) error {
 		return fmt.Errorf("failed to read file: %w", err)
 	}
 	
-	// Execute the script through the queue
+	// Get enhanced file name for better stack traces
+	fileName := r.getEnhancedFileName(absPath, false, "")
+	
+	// Execute the script through the queue with proper file name
 	done := make(chan error, 1)
 	r.QueueJSOperation(func() {
-		_, err := r.runtime.RunString(string(source))
+		_, err := r.runtime.RunScript(fileName, string(source))
 		done <- err
 	})
 	
 	err = <-done
 	if err != nil {
-		return fmt.Errorf("execution error: %w", err)
+		// Enhanced error handling with stack trace
+		if moduleErr, ok := err.(*errors.ModuleError); ok {
+			// Format the error for display
+			fmt.Fprintf(os.Stderr, "\n%s\n", moduleErr.FormatError())
+			return fmt.Errorf("execution failed")
+		}
+		
+		// Try to create a module error from the JavaScript error
+		moduleErr := r.createModuleErrorFromJS(entrypoint, err)
+		fmt.Fprintf(os.Stderr, "\n%s\n", moduleErr.FormatError())
+		return fmt.Errorf("execution failed")
 	}
 	
 	// Wait for any active timers to complete
@@ -436,7 +466,8 @@ func (r *Runtime) RunScript(name string, source string) (interface{}, error) {
 	done := make(chan result, 1)
 	
 	r.QueueJSOperation(func() {
-		val, err := r.runtime.RunString(source)
+		// Use RunScript with file name for better stack traces
+		val, err := r.runtime.RunScript(name, source)
 		if err != nil {
 			done <- result{nil, err}
 			return
@@ -599,4 +630,151 @@ func (r *Runtime) RunScriptInQueue(name, source string) interface{ Wait() (inter
 	})
 	
 	return op
+}
+
+// createModuleErrorFromJS creates a ModuleError from a JavaScript execution error
+func (r *Runtime) createModuleErrorFromJS(moduleName string, jsErr error) *errors.ModuleError {
+	// Try to extract JavaScript stack trace directly from Goja error
+	var jsStackTrace string
+	
+	// If this is a Goja exception, try to extract the stack trace
+	if gojaErr, ok := jsErr.(*goja.Exception); ok {
+		// Get the error object value
+		errorValue := gojaErr.Value()
+		if errorObj := errorValue.ToObject(r.runtime); errorObj != nil {
+			// Try to get the stack property
+			if stackProp := errorObj.Get("stack"); stackProp != nil && !goja.IsUndefined(stackProp) && !goja.IsNull(stackProp) {
+				jsStackTrace = stackProp.String()
+			}
+		}
+	}
+	
+	// Parse the JavaScript error to extract basic information
+	jsError, parseErr := errors.ParseJSError(jsErr)
+	if parseErr != nil {
+		// If we can't parse the JS error, create a basic module error
+		moduleErr := errors.NewModuleError(moduleName, "", "execute", jsErr)
+		if jsStackTrace != "" {
+			moduleErr = moduleErr.WithJSStackTrace(jsStackTrace)
+		}
+		return moduleErr
+	}
+	
+	// If we have a JavaScript stack trace, parse it for better information
+	if jsStackTrace != "" {
+		// Parse the stack trace to get more detailed information
+		stackJSError, stackParseErr := errors.ParseJSError(jsStackTrace)
+		if stackParseErr == nil && len(stackJSError.Stack) > 0 {
+			// Use information from the parsed stack trace
+			jsError.Stack = stackJSError.Stack
+			if jsError.FileName == "" && stackJSError.FileName != "" {
+				jsError.FileName = stackJSError.FileName
+			}
+			if jsError.LineNumber == 0 && stackJSError.LineNumber > 0 {
+				jsError.LineNumber = stackJSError.LineNumber
+				jsError.ColumnNumber = stackJSError.ColumnNumber
+			}
+		}
+	}
+	
+	// Create a module error with enhanced information
+	moduleErr := errors.NewModuleError(moduleName, jsError.FileName, "execute", jsErr)
+	
+	// Add JavaScript stack trace (use formatted version from parser)
+	if len(jsError.Stack) > 0 {
+		stackStr := jsError.FormatJSError()
+		moduleErr = moduleErr.WithJSStackTrace(stackStr)
+	} else if jsStackTrace != "" {
+		// Fallback to raw stack trace if parsing failed
+		moduleErr = moduleErr.WithJSStackTrace(jsStackTrace)
+	}
+	
+	// Add line and column information if available
+	if jsError.LineNumber > 0 {
+		moduleErr = moduleErr.WithLineInfo(jsError.LineNumber, jsError.ColumnNumber)
+	}
+	
+	// Add source context if we have file information
+	if jsError.FileName != "" && jsError.LineNumber > 0 {
+		context := errors.GetSourceContext(jsError.FileName, jsError.LineNumber, 3)
+		moduleErr = moduleErr.WithSourceContext(context)
+	}
+	
+	return moduleErr
+}
+
+// getEnhancedFileName generates enhanced file names for better JavaScript stack traces
+// Format: "moduleName:filepath" for modules, "projectName:filepath" for main files
+func (r *Runtime) getEnhancedFileName(filePath string, isModule bool, moduleName string) string {
+	// Get relative path from current working directory
+	relPath := r.getRelativePath(filePath)
+	
+	if isModule && moduleName != "" {
+		// For modules: "moduleName:filepath"
+		return fmt.Sprintf("%s:%s", moduleName, relPath)
+	}
+	
+	// For main files: use project name from package.json
+	projectName := "gode-app" // default fallback
+	if r.config != nil && r.config.Name != "" {
+		projectName = r.config.Name
+	}
+	
+	return fmt.Sprintf("%s:%s", projectName, relPath)
+}
+
+// getRelativePath converts an absolute path to relative path from current working directory
+func (r *Runtime) getRelativePath(absolutePath string) string {
+	// Get current working directory
+	cwd, err := os.Getwd()
+	if err != nil {
+		// If we can't get cwd, just return the file name
+		return filepath.Base(absolutePath)
+	}
+	
+	// Try to get relative path
+	relPath, err := filepath.Rel(cwd, absolutePath)
+	if err != nil {
+		// If we can't get relative path, return absolute path
+		return absolutePath
+	}
+	
+	// Clean up the path
+	return filepath.Clean(relPath)
+}
+
+// extractModuleName extracts a meaningful module name from a specifier
+func (r *Runtime) extractModuleName(specifier string) string {
+	// Remove file extensions
+	name := strings.TrimSuffix(specifier, filepath.Ext(specifier))
+	
+	// For relative paths, get the base name
+	if strings.HasPrefix(specifier, "./") || strings.HasPrefix(specifier, "../") {
+		name = filepath.Base(name)
+	}
+	
+	// For absolute paths, try to get a meaningful name
+	if filepath.IsAbs(specifier) {
+		name = filepath.Base(name)
+	}
+	
+	// For URLs, extract the last meaningful part
+	if strings.HasPrefix(specifier, "http://") || strings.HasPrefix(specifier, "https://") {
+		parts := strings.Split(specifier, "/")
+		if len(parts) > 0 {
+			name = strings.TrimSuffix(parts[len(parts)-1], filepath.Ext(parts[len(parts)-1]))
+		}
+	}
+	
+	// For npm-style modules (no path separators), use as-is
+	if !strings.Contains(specifier, "/") && !strings.Contains(specifier, "\\") {
+		name = specifier
+	}
+	
+	// If name is empty, fallback to "module"
+	if name == "" {
+		name = "module"
+	}
+	
+	return name
 }

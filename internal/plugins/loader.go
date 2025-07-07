@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"plugin"
 	"strings"
+
+	"github.com/rizqme/gode/internal/errors"
 )
 
 // Loader handles loading and managing Go plugins
@@ -23,63 +25,65 @@ func NewLoader(rt interface{}) *Loader {
 
 // LoadPlugin loads a Go plugin from the specified path
 func (l *Loader) LoadPlugin(path string) (*PluginInfo, error) {
-	// Check if plugin is already loaded
-	absPath, err := filepath.Abs(path)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get absolute path: %v", err)
-	}
-
-	if info, exists := l.plugins[absPath]; exists {
-		return info, nil
-	}
-
-	// Load the plugin
-	p, err := plugin.Open(path)
-	if err != nil {
-		return nil, fmt.Errorf("failed to open plugin %s: %v", path, err)
-	}
-
-	// Create plugin info
-	info := &PluginInfo{
-		Path:        absPath,
-		Initialized: false,
-	}
-
-	// Try to load plugin interface implementation
-	if pluginImpl, err := l.loadPluginInterface(p); err == nil {
-		info.Plugin = pluginImpl
-		info.Name = pluginImpl.Name()
-		info.Version = pluginImpl.Version()
-		
-		// Initialize the plugin
-		if err := pluginImpl.Initialize(l.runtime); err != nil {
-			return nil, fmt.Errorf("failed to initialize plugin %s: %v", info.Name, err)
-		}
-		info.Initialized = true
-	} else {
-		// Fallback: load individual exported functions
-		info.Name = l.extractPluginName(path)
-		info.Version = "unknown"
-		
-		// Load exports directly from plugin symbols
-		exports, err := l.loadDirectExports(p)
+	return errors.SafeOperationWithResult("PluginLoader", "LoadPlugin", func() (*PluginInfo, error) {
+		// Check if plugin is already loaded
+		absPath, err := filepath.Abs(path)
 		if err != nil {
-			return nil, fmt.Errorf("failed to load plugin exports: %v", err)
+			return nil, errors.NewModuleError("plugin", path, "resolve-path", err)
 		}
-		
-		// Create a wrapper plugin
-		info.Plugin = &directPlugin{
-			name:    info.Name,
-			version: info.Version,
-			exports: exports,
-		}
-		info.Initialized = true
-	}
 
-	// Register the plugin
-	l.plugins[absPath] = info
-	
-	return info, nil
+		if info, exists := l.plugins[absPath]; exists {
+			return info, nil
+		}
+
+		// Load the plugin
+		p, err := plugin.Open(path)
+		if err != nil {
+			return nil, errors.NewModuleError("plugin", path, "open", err).WithSourceContext(fmt.Sprintf("Plugin path: %s", absPath))
+		}
+
+		// Create plugin info
+		info := &PluginInfo{
+			Path:        absPath,
+			Initialized: false,
+		}
+
+		// Try to load plugin interface implementation
+		if pluginImpl, err := l.loadPluginInterface(p); err == nil {
+			info.Plugin = pluginImpl
+			info.Name = pluginImpl.Name()
+			info.Version = pluginImpl.Version()
+			
+			// Initialize the plugin
+			if err := pluginImpl.Initialize(l.runtime); err != nil {
+				return nil, errors.NewModuleError("plugin", path, "initialize", err).WithSourceContext(fmt.Sprintf("Plugin: %s v%s", info.Name, info.Version))
+			}
+			info.Initialized = true
+		} else {
+			// Fallback: load individual exported functions
+			info.Name = l.extractPluginName(path)
+			info.Version = "unknown"
+			
+			// Load exports directly from plugin symbols
+			exports, err := l.loadDirectExports(p)
+			if err != nil {
+				return nil, errors.NewModuleError("plugin", path, "load-exports", err).WithSourceContext(fmt.Sprintf("Plugin: %s", info.Name))
+			}
+			
+			// Create a wrapper plugin
+			info.Plugin = &directPlugin{
+				name:    info.Name,
+				version: info.Version,
+				exports: exports,
+			}
+			info.Initialized = true
+		}
+
+		// Register the plugin
+		l.plugins[absPath] = info
+		
+		return info, nil
+	})
 }
 
 // loadPluginInterface tries to load a plugin that implements the Plugin interface

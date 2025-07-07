@@ -91,13 +91,20 @@ func (b *Bridge) RegisterGlobals() error {
 	})
 	
 	// Create JavaScript wrapper to make test both a function and have properties
+	// Use let or var instead of const to allow redeclaration, or check if already exists
 	testWrapper := `
-		const test = function(name, fn, options) {
-			return __test(name, fn, options);
-		};
-		test.skip = __testSkip;
-		test.only = __testOnly;
-		globalThis.test = test;
+		if (typeof globalThis.test === 'undefined') {
+			const test = function(name, fn, options) {
+				return __test(name, fn, options);
+			};
+			test.skip = __testSkip;
+			test.only = __testOnly;
+			globalThis.test = test;
+		} else {
+			// Update existing test functions
+			globalThis.test.skip = __testSkip;
+			globalThis.test.only = __testOnly;
+		}
 	`
 	
 	// Execute the wrapper script

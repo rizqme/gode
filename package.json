@@ -1,0 +1,7 @@
+{
+  "name": "gode-stacktrace-test",
+  "version": "1.0.0",
+  "description": "Test project for JavaScript stacktrace functionality",
+  "main": "index.js",
+  "type": "module"
+}
