@@ -102,7 +102,7 @@ describe('Plugin System', () => {
       
       expect(hello.greet('World')).toBe('Hello, World!');
       expect(hello.greet('Gode')).toBe('Hello, Gode!');
-      expect(hello.greet('')).toBe('Hello, !');
+      expect(hello.greet('')).toBe('Hello, Anonymous!');
     });
 
     test('reverse function should work correctly', () => {

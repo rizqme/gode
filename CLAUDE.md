@@ -55,6 +55,7 @@ Gode is a modern JavaScript/TypeScript runtime built in Go, inspired by Deno. It
   - Plugin registry for managing loaded plugins
   - **Thread-safe async operations** via runtime queue system
   - **Garbage collection protection** with panic recovery for JavaScript callbacks
+  - **Flexible argument handling** with variadic and optional parameters
   - Support for both callback and promise-like patterns
 - **Stream Module**: Complete Node.js-compatible streams implementation
   - Readable, Writable, Duplex, Transform, and PassThrough streams
@@ -90,6 +91,7 @@ go build -o gode ./cmd/gode
 # Run examples
 ./gode run examples/simple.js
 ./gode run examples/plugin_demo.js
+./gode run examples/features_test.js
 ./gode run examples/basic_stream_test.js
 ./gode run examples/functional_stream_test.js
 ./gode run examples/complete_stream_test.js

@@ -15,17 +15,18 @@ Gode is a modern JavaScript/TypeScript runtime built in Go, inspired by Deno. It
 ## 🏗️ Architecture
 
 Gode leverages:
-- **Goja** for JavaScript execution with Go integration
+- **Goja** (custom fork) for JavaScript execution with enhanced Go integration
 - **esbuild** for TypeScript compilation and bundling
 - **Go plugins** for high-performance native extensions
 - **Channel-based communication** between Go and JavaScript
 - **Runtime queue system** for thread-safe operations
+- **Automatic callback wrapping** for safe async plugin execution
 
 ## 📦 Installation
 
 ```bash
-# Clone the repository
-git clone https://github.com/rizqme/gode.git
+# Clone the repository with submodules
+git clone --recursive https://github.com/rizqme/gode.git
 cd gode
 
 # Build the CLI
@@ -183,7 +184,7 @@ console.log('5 + 3 =', math.add(5, 3));
 
 ### Advanced Async Plugin
 
-For plugins with goroutines and async operations:
+For plugins with goroutines and async operations, Gode automatically handles thread-safe callback execution:
 
 ```go
 package main
@@ -192,44 +193,59 @@ import (
     "fmt"
     "time"
 )
+import "C"
 
-// VM interface for queuing JavaScript operations
-type VM interface {
-    QueueJSOperation(fn func())
-}
-
-var runtime VM
-
-// Async function with proper queuing and error handling
-func DelayedAdd(a, b int, delayMs int, callback func(interface{}, interface{})) {
-    cb := callback // Capture to prevent GC issues
+// Async function with callback - Gode automatically wraps for thread safety
+func DelayedAdd(a, b int, delayMs int, callback func(error, interface{})) {
     go func() {
         time.Sleep(time.Duration(delayMs) * time.Millisecond)
-        result := a + b
-        
-        if runtime != nil {
-            runtime.QueueJSOperation(func() {
-                if cb != nil {
-                    defer func() {
-                        if r := recover(); r != nil {
-                            fmt.Printf("Callback panic recovered: %v\n", r)
-                        }
-                    }()
-                    cb(nil, result)
-                }
-            })
+        if callback != nil {
+            callback(nil, a + b)  // Automatically queued to JS thread
         }
     }()
 }
 
-// Initialize stores runtime reference for queuing
-func Initialize(rt interface{}) error {
-    if vm, ok := rt.(VM); ok {
-        runtime = vm
+// Promise-like pattern with object methods
+func PromiseAdd(a, b int, delayMs int) interface{} {
+    result := make(map[string]interface{})
+    
+    result["then"] = func(onResolve func(interface{})) interface{} {
+        go func() {
+            time.Sleep(time.Duration(delayMs) * time.Millisecond)
+            if onResolve != nil {
+                onResolve(a + b)  // Automatically queued to JS thread
+            }
+        }()
+        
+        // Return chainable object
+        return map[string]interface{}{
+            "catch": func(onReject func(interface{})) interface{} {
+                return nil
+            },
+        }
     }
+    
+    return result
+}
+
+func Initialize(runtime interface{}) error {
+    fmt.Println("Async plugin v2.0 initialized")
     return nil
 }
+
+func Exports() map[string]interface{} {
+    return map[string]interface{}{
+        "delayedAdd":  DelayedAdd,
+        "promiseAdd":  PromiseAdd,
+    }
+}
 ```
+
+**Key Features:**
+- Callbacks from goroutines are automatically wrapped for thread safety
+- No manual queuing required - Gode handles it transparently
+- Support for both callback and promise patterns
+- Panic recovery built-in for JavaScript callbacks
 
 ## 🎨 Built-in Modules
 
@@ -313,17 +329,23 @@ gode/
 - **Test Suites**: 22 total, 22 passed
 - **Tests**: 372 total, 371 passed, 1 skipped
 - **Coverage**: Comprehensive plugin, stream, and runtime testing
-- **Performance**: ~370ms total test execution time
+- **Performance**: ~600ms total test execution time
+- **Plugin Tests**: Full coverage including async operations and thread safety
 
 ## 🚧 Current Status
 
 ### ✅ Completed Features
 
-- **Plugin System**: Dynamic Go plugin loading with JavaScript bindings
+- **Plugin System**: Dynamic Go plugin loading with automatic JavaScript bindings
+  - Thread-safe callback execution from goroutines
+  - Automatic wrapping of nested functions in returned objects
+  - Support for both callback and promise patterns
+  - Panic recovery for JavaScript callbacks
 - **Stream Module**: Complete Node.js-compatible streams implementation
 - **Test Framework**: Jest-like testing with 15+ matchers and hook support
 - **Thread Safety**: Runtime queue system for safe async operations
 - **Async Patterns**: Support for callbacks, promises, and goroutine-based operations
+- **Module System**: Support for .so plugins, built-in modules, and file imports
 
 ### 🚧 In Progress
 
@@ -352,9 +374,11 @@ gode/
 ### Development Guidelines
 
 - **Thread Safety**: All JavaScript operations must use the runtime queue
+- **Plugin Callbacks**: Callbacks from goroutines are automatically wrapped - no manual queuing needed
 - **Error Handling**: Use panic recovery for JavaScript callback protection
 - **Testing**: Add comprehensive tests for new features
 - **Documentation**: Update design docs and examples
+- **Submodules**: Use `git clone --recursive` to get the custom Goja fork
 
 ## 📄 License
 
@@ -362,7 +386,7 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ## 🙏 Acknowledgments
 
-- **Goja** - JavaScript engine for Go
+- **Goja** - JavaScript engine for Go (using custom fork with NaN fixes)
 - **Deno** - Inspiration for security-first design
 - **Node.js** - API compatibility and ecosystem inspiration
 - **esbuild** - Fast TypeScript/JavaScript bundling

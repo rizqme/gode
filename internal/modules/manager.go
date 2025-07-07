@@ -95,17 +95,16 @@ func (m *ModuleManager) Load(specifier string) (string, error) {
 		return "", err
 	}
 	
-	// For plugins, we need to register with the original specifier name
+	// For plugins, register with the original specifier name for direct loading
 	if strings.HasSuffix(resolved, ".so") && source == "" {
-		// Register the plugin with its dependency name if loaded from dependencies
-		if m.config != nil && m.config.Dependencies != nil {
-			if _, isDep := m.config.Dependencies[specifier]; isDep {
-				if rt, ok := m.runtime.(interface{ RegisterModule(string, interface{}) }); ok {
-					// Get the plugin from the base name first
-					pluginName := filepath.Base(strings.TrimSuffix(resolved, filepath.Ext(resolved)))
-					if jsObj, exists := m.pluginRegistry.GetPlugin(pluginName); exists {
-						rt.RegisterModule(specifier, jsObj)
-					}
+		if rt, ok := m.runtime.(interface{ RegisterModule(string, interface{}) }); ok {
+			// Get the plugin from the base name first
+			pluginName := filepath.Base(strings.TrimSuffix(resolved, filepath.Ext(resolved)))
+			if jsObj, exists := m.pluginRegistry.GetPlugin(pluginName); exists {
+				// Register with both the plugin name and the original specifier
+				rt.RegisterModule(pluginName, jsObj)
+				if specifier != pluginName {
+					rt.RegisterModule(specifier, jsObj)
 				}
 			}
 		}
@@ -207,7 +206,11 @@ func (m *ModuleManager) isFilePath(specifier string) bool {
 	return strings.HasPrefix(specifier, "./") ||
 		strings.HasPrefix(specifier, "../") ||
 		strings.HasPrefix(specifier, "/") ||
-		filepath.IsAbs(specifier)
+		filepath.IsAbs(specifier) ||
+		strings.HasSuffix(specifier, ".so") ||
+		strings.HasSuffix(specifier, ".js") ||
+		strings.HasSuffix(specifier, ".json") ||
+		strings.HasSuffix(specifier, ".ts")
 }
 
 func (m *ModuleManager) isHTTPURL(specifier string) bool {

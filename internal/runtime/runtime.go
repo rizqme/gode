@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"github.com/rizqme/gode/goja"
 	"github.com/rizqme/gode/internal/modules"
@@ -29,6 +30,7 @@ type Runtime struct {
 	moduleManager *modules.ModuleManager
 	mu            sync.RWMutex
 	disposed      bool
+	operationID   int64
 }
 
 // gojaObject is a simple adapter to satisfy plugin interfaces
@@ -452,6 +454,19 @@ func (r *Runtime) CallJSFunction(fn interface{}) error {
 	return <-done
 }
 
+// Async executes a function in the background (for stream module compatibility)
+func (r *Runtime) Async(fn func()) {
+	go func() {
+		defer func() {
+			if rec := recover(); rec != nil {
+				fmt.Printf("Async function panic recovered: %v\n", rec)
+			}
+		}()
+		fn()
+	}()
+}
+
+
 // NewObject creates a new JavaScript object
 func (r *Runtime) NewObject() *goja.Object {
 	done := make(chan *goja.Object, 1)
@@ -462,31 +477,26 @@ func (r *Runtime) NewObject() *goja.Object {
 }
 
 // NewObjectForPlugins creates a new JavaScript object (implements plugins.VM interface)
+// This method is called from within queued operations, so we create the object directly
 func (r *Runtime) NewObjectForPlugins() plugins.Object {
-	done := make(chan plugins.Object, 1)
-	r.QueueJSOperation(func() {
-		done <- &gojaObject{obj: r.runtime.NewObject()}
-	})
-	return <-done
+	return &gojaObject{obj: r.runtime.NewObject()}
 }
 
 // RegisterModule registers a module in the runtime
 func (r *Runtime) RegisterModule(name string, exports interface{}) {
-	r.QueueJSOperation(func() {
-		// Handle different types of exports
-		switch v := exports.(type) {
-		case *goja.Object:
-			r.modules[name] = r.runtime.ToValue(v)
-		case plugins.Object:
-			// Convert plugin object to goja object
-			if gObj, ok := v.(*gojaObject); ok {
-				r.modules[name] = r.runtime.ToValue(gObj.obj)
-			}
-		default:
-			// Try to convert as is
-			r.modules[name] = r.runtime.ToValue(exports)
+	// Handle different types of exports directly - we assume this is called from within queued operations
+	switch v := exports.(type) {
+	case *goja.Object:
+		r.modules[name] = r.runtime.ToValue(v)
+	case plugins.Object:
+		// Convert plugin object to goja object
+		if gObj, ok := v.(*gojaObject); ok {
+			r.modules[name] = r.runtime.ToValue(gObj.obj)
 		}
-	})
+	default:
+		// Try to convert as is
+		r.modules[name] = r.runtime.ToValue(exports)
+	}
 }
 
 // Dispose cleans up the runtime
@@ -505,4 +515,71 @@ func (r *Runtime) Dispose() {
 	
 	r.disposed = true
 	close(r.vmQueue)
+}
+
+// GetRuntime returns the underlying Goja runtime for compatibility
+func (r *Runtime) GetRuntime() *goja.Runtime {
+	return r.runtime
+}
+
+// JSOperation represents a queued JavaScript operation that can be awaited
+type JSOperation struct {
+	id       string
+	function func() interface{}
+	result   interface{}
+	error    error
+	done     chan struct{}
+	mutex    sync.RWMutex
+}
+
+// Wait blocks until the operation completes and returns the result
+func (op *JSOperation) Wait() (interface{}, error) {
+	<-op.done
+	op.mutex.RLock()
+	defer op.mutex.RUnlock()
+	return op.result, op.error
+}
+
+// Ensure JSOperation implements the interface
+var _ interface {
+	Wait() (interface{}, error)
+} = (*JSOperation)(nil)
+
+// RunScriptInQueue queues a JavaScript script execution and returns a JSOperation
+func (r *Runtime) RunScriptInQueue(name, source string) interface{ Wait() (interface{}, error) } {
+	id := fmt.Sprintf("script_%s_%d", name, atomic.AddInt64(&r.operationID, 1))
+	
+	op := &JSOperation{
+		id:   id,
+		done: make(chan struct{}),
+	}
+	
+	// Queue the operation
+	r.QueueJSOperation(func() {
+		defer func() {
+			if rec := recover(); rec != nil {
+				op.mutex.Lock()
+				if err, ok := rec.(error); ok {
+					op.error = err
+				} else {
+					op.error = fmt.Errorf("panic: %v", rec)
+				}
+				op.mutex.Unlock()
+				close(op.done)
+				return
+			}
+		}()
+		
+		op.mutex.Lock()
+		val, err := r.runtime.RunString(source)
+		if err != nil {
+			op.error = err
+		} else if val != nil {
+			op.result = val.Export()
+		}
+		op.mutex.Unlock()
+		close(op.done)
+	})
+	
+	return op
 }

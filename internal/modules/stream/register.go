@@ -16,6 +16,7 @@ type RuntimeInterface interface {
 	RegisterModule(name string, exports interface{})
 	SetGlobal(name string, value interface{}) error
 	RunScript(name string, source string) (interface{}, error)
+	Async(fn func())
 }
 
 // RegisterModule registers the stream module in the JavaScript VM
