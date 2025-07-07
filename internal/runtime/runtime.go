@@ -28,6 +28,7 @@ type Runtime struct {
 	timersBridge  *timers.Bridge
 	vmQueue       chan func()
 	moduleManager *modules.ModuleManager
+	moduleResolver *ModuleResolver
 	mu            sync.RWMutex
 	disposed      bool
 	operationID   int64
@@ -146,6 +147,13 @@ func (r *Runtime) setupGlobals() error {
 					// Otherwise execute the source
 					val, err := r.runtime.RunString(source)
 					if err == nil {
+						// Check if this is an ES6 module (has __gode_exports)
+						if exportsVal := r.runtime.Get("__gode_exports"); exportsVal != nil && !goja.IsUndefined(exportsVal) && !goja.IsNull(exportsVal) {
+							// Clear __gode_exports for next module
+							r.runtime.Set("__gode_exports", goja.Undefined())
+							return exportsVal
+						}
+						// Otherwise return the last expression value (CommonJS style)
 						return val
 					}
 				}
@@ -222,6 +230,11 @@ func (r *Runtime) Configure(cfg *config.PackageJSON) error {
 	// Setup built-in modules
 	if err := r.setupBuiltinModules(); err != nil {
 		return fmt.Errorf("failed to setup builtin modules: %w", err)
+	}
+	
+	// Setup module resolver for ES6 imports
+	if err := r.RegisterModuleResolver(); err != nil {
+		return fmt.Errorf("failed to setup module resolver: %w", err)
 	}
 	
 	return nil
@@ -459,7 +472,7 @@ func (r *Runtime) Async(fn func()) {
 	go func() {
 		defer func() {
 			if rec := recover(); rec != nil {
-				fmt.Printf("Async function panic recovered: %v\n", rec)
+				// Panic recovered silently
 			}
 		}()
 		fn()
