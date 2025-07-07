@@ -48,11 +48,14 @@ Gode is a modern JavaScript/TypeScript runtime built in Go, inspired by Deno. It
 - Request/response handling with streaming support
 - Middleware chain execution
 - Go-based external API simulation
-- **Plugin System**: Dynamic loading of Go plugins (.so files) with automatic JavaScript bindings
+- **Plugin System**: Dynamic loading of Go plugins (.so files) with automatic JavaScript bindings ✅
   - No permissions required for loading plugins
   - Leverages Goja's built-in Go-JavaScript type conversion
-  - Example plugins: math (arithmetic operations) and hello (string operations)
+  - Example plugins: math (arithmetic operations), hello (string operations), and async (goroutine patterns)
   - Plugin registry for managing loaded plugins
+  - **Thread-safe async operations** via runtime queue system
+  - **Garbage collection protection** with panic recovery for JavaScript callbacks
+  - Support for both callback and promise-like patterns
 - **Stream Module**: Complete Node.js-compatible streams implementation
   - Readable, Writable, Duplex, Transform, and PassThrough streams
   - EventEmitter integration with on/emit/once methods
@@ -152,15 +155,19 @@ gode/
 ├── pkg/               # Public packages
 │   └── config/        # Configuration management
 │       └── package.go        # package.json handling
-├── plugins/examples/  # Example plugins
-│   ├── math/          # Math operations plugin
+├── examples/          # Example applications and plugins
+│   ├── plugin-math/   # Math operations plugin
 │   │   ├── main.go    # Plugin source
 │   │   ├── Makefile   # Build script
 │   │   └── math.so    # Compiled plugin
-│   └── hello/         # String operations plugin
-│       ├── main.go    # Plugin source
+│   ├── plugin-hello/  # String operations plugin
+│   │   ├── main.go    # Plugin source
+│   │   ├── Makefile   # Build script
+│   │   └── hello.so   # Compiled plugin
+│   └── plugin-async/  # Async operations plugin (demonstrates goroutine patterns)
+│       ├── main.go    # Plugin source with thread-safe async operations
 │       ├── Makefile   # Build script
-│       └── hello.so   # Compiled plugin
+│       └── async.so   # Compiled plugin
 ├── design/            # Design documentation
 │   ├── DESIGN.md             # Core project design document
 │   ├── PLUGIN_DESIGN.md      # Plugin system architecture
@@ -258,7 +265,50 @@ gode/
 
 # Run tests with pattern matching
 ./gode test tests/*.test.js
+
+# Run async plugin tests
+./gode test tests/async-plugins.test.js
 ```
+
+### Async Plugin Usage Examples
+
+The async plugin demonstrates advanced patterns for goroutine-based operations:
+
+```javascript
+// Load the async plugin
+const async = require('./examples/plugin-async/async.so');
+
+// Callback-based async operations
+async.delayedAdd(10, 20, 100, (error, result) => {
+    if (error) {
+        console.error('Error:', error);
+    } else {
+        console.log('Result:', result); // 30 after 100ms
+    }
+});
+
+// Promise-like async operations
+async.promiseAdd(5, 3, 50)
+    .then(result => console.log('Promise result:', result))
+    .catch(error => console.error('Promise error:', error));
+
+// Fetch data asynchronously
+async.fetchData('user123', (error, data) => {
+    console.log('Fetched:', data); // { id: 'user123', name: 'Item user123', value: 70 }
+});
+
+// Process arrays with statistics
+async.processArray([1, 2, 3, 4, 5], (error, stats) => {
+    console.log('Stats:', stats); // { sum: 15, count: 5, average: 3 }
+});
+```
+
+#### Key Features of Async Plugin:
+- **Thread Safety**: All JavaScript callbacks executed via runtime queue
+- **Garbage Collection Protection**: Panic recovery prevents runtime crashes
+- **Multiple Patterns**: Supports both Node.js-style callbacks and Promise-like interfaces
+- **Real Goroutines**: Demonstrates true concurrent operations with Go routines
+- **Error Handling**: Proper error propagation for both success and failure cases
 
 ### Future Testing (Planned)
 - `gode bench` - Integrated benchmarking

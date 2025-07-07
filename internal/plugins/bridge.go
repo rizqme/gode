@@ -4,6 +4,7 @@ package plugins
 type VM interface {
 	NewObjectForPlugins() Object
 	RegisterModule(name string, exports interface{})
+	QueueJSOperation(fn func())
 }
 
 type Object interface {
